@@ -1,78 +1,110 @@
-use plotters::prelude::*;
-use std::ops::Range;
-use tab2plot_lib::{
-    generate_graph_image, AxisTransform, GraphConfig,
-    MarkerType, SeriesData, TickMode
-};
+use base64::{engine::general_purpose, Engine as _};
+use csv::ReaderBuilder;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::Path;
+use tab2plot_lib::{generate_graph_image, GraphConfig, SeriesData};
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let trace1 = SeriesData {
-        label: "サンプル系列".to_string(),
-        points: vec![
-            (0.0, 0.0),
-            (1.0, 10.0),
-            (2.0, 25.0),
-            (3.0, 15.0),
-            (4.0, 30.0),
-        ],
-        marker_type: MarkerType::CircleFilled,
-        marker_size: 6,
-        draw_line: true,
-        line_width: 2,
-        color: RGBColor(255, 0, 0), // 赤色
-        use_secondary: false,      // 主軸を使用
-    };
+fn encode_png(width: u32, height: u32, raw_rgb: &[u8]) -> Result<Vec<u8>, String> {
+    let mut png_bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+        encoder.set_color(png::ColorType::Rgb);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+        writer
+            .write_image_data(raw_rgb)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(png_bytes)
+}
 
-    let series_list = vec![trace1];
-
-    // 2. グラフ全体の設定（インプット）の組み立て
-    let config = GraphConfig {
-        base_font_size: Some(40),
-        x_desc: "時間 [s]".to_string(),
-        y_desc: "カウント".to_string(),
-        y2_desc: "".to_string(),
-
-        x_range: 0.0..5.0,
-        y_range: 0.0..40.0,
-        y2_range: 0.0..1.0, // 未使用だがデフォルト値
-
-        x_labels: 5,
-        y_labels: 5,
-        y2_labels: 0,
-
-        x_ticks_mode: TickMode::Auto(5),
-        // Y軸は2.0刻み、オフセット0.0のインターバル指定例
-        y_ticks_mode: TickMode::Interval { base: 2.0, offset: 0.0 },
-        y2_ticks_mode: TickMode::Auto(0),
-
-        x_tick_length: 15,
-        y_tick_length: 15,
-        font_name: "sans-serif".to_string(),
-        x_format_fixed: 1,
-        y_format_fixed: 1,
-        y2_format_fixed: 0,
-        show_legend: true,
-
-        x_transform: AxisTransform::Linear,
-        y_transform: AxisTransform::Linear,
-        y2_transform: AxisTransform::Linear,
-
-        x_minor_grid_interval: Some(0.5), // 0.5刻みで補助線を引く
-        y_minor_grid_interval: None,
-        y2_minor_grid_interval: None,
-
-        use_cross_axes: false, // 通常の外枠モード
-        axis_width: Some(4.0),
-        minor_grid_width: Some(1.0),
-    };
-
-    // 3. 描画関数の実行（アウトプットの取得）
-    let width = 1920;
-    let height = 1440;
-
-    // raw_rgb に width * height * 3 バイトの RAW RGBデータが返る
-    let raw_rgb = generate_graph_image(width, height, &config, &series_list)?;
-
-    println!("描画成功: {} バイトのRAWデータを取得しました。", raw_rgb.len());
+fn write_png_file(path: &Path, width: u32, height: u32, raw_rgb: &[u8]) -> Result<(), String> {
+    let file = File::create(path).map_err(|e| e.to_string())?;
+    let mut writer = BufWriter::new(file);
+    let mut encoder = png::Encoder::new(&mut writer, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    {
+        let mut png_writer = encoder.write_header().map_err(|e| e.to_string())?;
+        png_writer
+            .write_image_data(raw_rgb)
+            .map_err(|e| e.to_string())?;
+    }
+    writer.flush().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+fn load_points_from_csv(file_path: String) -> Result<Vec<(f64, f64)>, String> {
+    let mut reader = ReaderBuilder::new()
+        .has_headers(false)
+        .from_path(file_path)
+        .map_err(|e| e.to_string())?;
+
+    let mut points = Vec::new();
+    for record in reader.records() {
+        let record = record.map_err(|e| e.to_string())?;
+        if record.len() < 2 {
+            continue;
+        }
+
+        let x = record
+            .get(0)
+            .unwrap_or("0")
+            .trim()
+            .parse::<f64>()
+            .map_err(|e| e.to_string())?;
+        let y = record
+            .get(1)
+            .unwrap_or("0")
+            .trim()
+            .parse::<f64>()
+            .map_err(|e| e.to_string())?;
+        points.push((x, y));
+    }
+
+    Ok(points)
+}
+
+#[tauri::command]
+fn render_graph_preview(
+    config: GraphConfig,
+    series_list: Vec<SeriesData>,
+    width: u32,
+    height: u32,
+) -> Result<String, String> {
+    let raw_rgb =
+        generate_graph_image(width, height, &config, &series_list).map_err(|e| e.to_string())?;
+    let png_bytes = encode_png(width, height, &raw_rgb)?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        general_purpose::STANDARD.encode(png_bytes)
+    ))
+}
+
+#[tauri::command]
+fn save_graph_png(
+    config: GraphConfig,
+    series_list: Vec<SeriesData>,
+    width: u32,
+    height: u32,
+    file_path: String,
+) -> Result<(), String> {
+    let raw_rgb =
+        generate_graph_image(width, height, &config, &series_list).map_err(|e| e.to_string())?;
+    write_png_file(Path::new(&file_path), width, height, &raw_rgb)
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            load_points_from_csv,
+            render_graph_preview,
+            save_graph_png,
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
