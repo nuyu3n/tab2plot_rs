@@ -1,0 +1,9 @@
+[package]
+name = "tab2plot_lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+plotters = "0.3.7"
+png = "0.18.1"
+serde = { version = "1.0.228", features = ["derive"] }
