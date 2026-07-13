@@ -6,7 +6,6 @@ use tab2plot_lib::{
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 系列データ（インプット）の組み立て
     let trace1 = SeriesData {
         label: "サンプル系列".to_string(),
         points: vec![
