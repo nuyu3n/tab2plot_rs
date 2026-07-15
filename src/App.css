@@ -26,7 +26,8 @@ body,
 
 body {
   margin: 0;
-  font-family: "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif;
+  font-family:
+    "Avenir Next", "Segoe UI", "Hiragino Sans", "Yu Gothic", sans-serif;
   color: var(--text);
   background:
     radial-gradient(
@@ -272,6 +273,124 @@ input[type="color"] {
   margin-top: 16px;
 }
 
+.csv-panel p,
+.gallery-panel p {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+
+.csv-table-wrap {
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(167, 180, 201, 0.12);
+  background: rgba(4, 10, 18, 0.55);
+}
+
+.csv-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.csv-table th,
+.csv-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(167, 180, 201, 0.12);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.csv-table th {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  background: rgba(14, 24, 39, 0.8);
+}
+
+.gallery-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.graph-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(167, 180, 201, 0.14);
+  border-radius: 20px;
+  background: rgba(6, 13, 25, 0.55);
+}
+
+.graph-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.graph-card-name {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(18, 30, 49, 0.88);
+  border: 1px solid rgba(167, 180, 201, 0.16);
+  font-size: 0.8rem;
+}
+
+.status-chip.busy {
+  border-color: rgba(67, 217, 189, 0.35);
+  background: rgba(10, 33, 31, 0.9);
+}
+
+.graph-card-meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.graph-card-preview {
+  border-radius: 16px;
+  overflow: hidden;
+  min-height: 180px;
+  border: 1px solid rgba(167, 180, 201, 0.12);
+  background: rgba(4, 10, 18, 0.55);
+}
+
+.graph-card-placeholder {
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  background:
+    radial-gradient(
+      circle at center,
+      rgba(67, 217, 189, 0.08),
+      transparent 55%
+    ),
+    rgba(7, 12, 22, 0.45);
+}
+
+.graph-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gallery-panel .empty-preview {
+  min-height: 240px;
+}
+
 .series-toolbar {
   display: grid;
   grid-template-columns: minmax(160px, 1.2fr) auto auto auto auto;
@@ -430,6 +549,10 @@ input[type="color"] {
   .preview-panel {
     position: static;
   }
+
+  .gallery-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 920px) {
@@ -451,6 +574,11 @@ input[type="color"] {
 
   .series-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .graph-card-header {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .app-shell {

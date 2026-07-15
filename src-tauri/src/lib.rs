@@ -1,9 +1,17 @@
 use base64::{engine::general_purpose, Engine as _};
 use csv::ReaderBuilder;
+use serde::Serialize;
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use tab2plot_lib::{generate_graph_image, GraphConfig, SeriesData};
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+struct CsvPreview {
+    total_rows: usize,
+    sample_rows: Vec<Vec<String>>,
+}
 
 fn encode_png(width: u32, height: u32, raw_rgb: &[u8]) -> Result<Vec<u8>, String> {
     let mut png_bytes = Vec::new();
@@ -36,31 +44,78 @@ fn write_png_file(path: &Path, width: u32, height: u32, raw_rgb: &[u8]) -> Resul
 }
 
 #[tauri::command]
-fn load_points_from_csv(file_path: String) -> Result<Vec<(f64, f64)>, String> {
+#[allow(non_snake_case)]
+fn load_csv_preview(filePath: String) -> Result<CsvPreview, String> {
     let mut reader = ReaderBuilder::new()
+        .flexible(true)
         .has_headers(false)
-        .from_path(file_path)
+        .from_path(filePath)
+        .map_err(|e| e.to_string())?;
+
+    let mut sample_rows = Vec::new();
+    let mut total_rows = 0usize;
+
+    for record in reader.records() {
+        let record = record.map_err(|e| e.to_string())?;
+        total_rows += 1;
+
+        if sample_rows.len() < 24 {
+            sample_rows.push(record.iter().map(|field| field.to_string()).collect());
+        }
+    }
+
+    Ok(CsvPreview {
+        total_rows,
+        sample_rows,
+    })
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+fn load_points_from_csv(filePath: String) -> Result<Vec<(f64, f64)>, String> {
+    let mut reader = ReaderBuilder::new()
+        .flexible(true)
+        .has_headers(false)
+        .from_path(filePath)
         .map_err(|e| e.to_string())?;
 
     let mut points = Vec::new();
-    for record in reader.records() {
+    for (line_index, record) in reader.records().enumerate() {
         let record = record.map_err(|e| e.to_string())?;
         if record.len() < 2 {
             continue;
         }
 
-        let x = record
-            .get(0)
-            .unwrap_or("0")
-            .trim()
-            .parse::<f64>()
-            .map_err(|e| e.to_string())?;
-        let y = record
-            .get(1)
-            .unwrap_or("0")
-            .trim()
-            .parse::<f64>()
-            .map_err(|e| e.to_string())?;
+        let x_text = record.get(0).unwrap_or("").trim();
+        let y_text = record.get(1).unwrap_or("").trim();
+
+        if x_text.is_empty() || y_text.is_empty() {
+            continue;
+        }
+
+        let x = match x_text.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) if line_index == 0 => continue,
+            Err(error) => {
+                return Err(format!(
+                    "CSV {} 行目のX値を数値に変換できません: {}",
+                    line_index + 1,
+                    error
+                ));
+            }
+        };
+
+        let y = match y_text.parse::<f64>() {
+            Ok(value) => value,
+            Err(_) if line_index == 0 => continue,
+            Err(error) => {
+                return Err(format!(
+                    "CSV {} 行目のY値を数値に変換できません: {}",
+                    line_index + 1,
+                    error
+                ));
+            }
+        };
         points.push((x, y));
     }
 
@@ -68,14 +123,15 @@ fn load_points_from_csv(file_path: String) -> Result<Vec<(f64, f64)>, String> {
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 fn render_graph_preview(
     config: GraphConfig,
-    series_list: Vec<SeriesData>,
+    seriesList: Vec<SeriesData>,
     width: u32,
     height: u32,
 ) -> Result<String, String> {
     let raw_rgb =
-        generate_graph_image(width, height, &config, &series_list).map_err(|e| e.to_string())?;
+        generate_graph_image(width, height, &config, &seriesList).map_err(|e| e.to_string())?;
     let png_bytes = encode_png(width, height, &raw_rgb)?;
     Ok(format!(
         "data:image/png;base64,{}",
@@ -84,16 +140,17 @@ fn render_graph_preview(
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
 fn save_graph_png(
     config: GraphConfig,
-    series_list: Vec<SeriesData>,
+    seriesList: Vec<SeriesData>,
     width: u32,
     height: u32,
-    file_path: String,
+    filePath: String,
 ) -> Result<(), String> {
     let raw_rgb =
-        generate_graph_image(width, height, &config, &series_list).map_err(|e| e.to_string())?;
-    write_png_file(Path::new(&file_path), width, height, &raw_rgb)
+        generate_graph_image(width, height, &config, &seriesList).map_err(|e| e.to_string())?;
+    write_png_file(Path::new(&filePath), width, height, &raw_rgb)
 }
 
 pub fn run() {
@@ -101,6 +158,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
+            load_csv_preview,
             load_points_from_csv,
             render_graph_preview,
             save_graph_png,
