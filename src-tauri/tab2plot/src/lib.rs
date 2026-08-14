@@ -1,12 +1,15 @@
-use plotters::prelude::*;
 use plotters::chart::DualCoordChartContext;
 use plotters::coord::cartesian::Cartesian2d;
 use plotters::coord::ranged1d::Ranged;
-use plotters::style::{TextStyle, text_anchor::{Pos, HPos, VPos}};
+use plotters::prelude::*;
+use plotters::style::{
+    TextStyle,
+    text_anchor::{HPos, Pos, VPos},
+};
+use serde::{Deserialize, Serialize};
 use std::ops::Range;
-use serde::{Serialize, Deserialize};
 
-/// グラフ描画に関する独自エラー
+/// グラフ描画に関するエラー
 #[derive(Debug)]
 pub enum GraphError {
     Drawing(String),
@@ -65,11 +68,7 @@ impl AxisTransform {
             AxisTransform::BiLinear { pos_int, neg_int } => {
                 let p = if *pos_int != 0.0 { *pos_int } else { 1.0 };
                 let n = if *neg_int != 0.0 { *neg_int } else { 1.0 };
-                if v >= 0.0 {
-                    v / p
-                } else {
-                    v / n
-                }
+                if v >= 0.0 { v / p } else { v / n }
             }
         }
     }
@@ -344,7 +343,11 @@ pub fn generate_graph_image(
             continue;
         }
         let is_sec = s.use_secondary && has_secondary;
-        let y_transform = if is_sec { &config.y2_transform } else { &config.y_transform };
+        let y_transform = if is_sec {
+            &config.y2_transform
+        } else {
+            &config.y_transform
+        };
 
         let mut pts = Vec::with_capacity(s.points.len());
         for &(x, y) in &s.points {
@@ -354,14 +357,26 @@ pub fn generate_graph_image(
                 continue;
             }
             pts.push((tx, ty));
-            if tx < x_min { x_min = tx; }
-            if tx > x_max { x_max = tx; }
+            if tx < x_min {
+                x_min = tx;
+            }
+            if tx > x_max {
+                x_max = tx;
+            }
             if is_sec {
-                if ty < y2_min { y2_min = ty; }
-                if ty > y2_max { y2_max = ty; }
+                if ty < y2_min {
+                    y2_min = ty;
+                }
+                if ty > y2_max {
+                    y2_max = ty;
+                }
             } else {
-                if ty < y_min { y_min = ty; }
-                if ty > y_max { y_max = ty; }
+                if ty < y_min {
+                    y_min = ty;
+                }
+                if ty > y_max {
+                    y_max = ty;
+                }
             }
         }
         if pts.is_empty() {
@@ -375,27 +390,32 @@ pub fn generate_graph_image(
     }
 
     if primary_series.is_empty() && secondary_series.is_empty() {
-        return Err(GraphError::InvalidData("描画可能なデータがありません（対数軸で正の値が無い等）".to_string()));
+        return Err(GraphError::InvalidData(
+            "描画可能なデータがありません（対数軸で正の値が無い等）".to_string(),
+        ));
     }
 
     // --- 軸範囲の決定 ---
     let x_plot_range = fix_range(if config.x_transform.is_bilinear() {
         centered_range(x_min, x_max)
     } else {
-        config.x_transform.forward(config.x_range.start)..config.x_transform.forward(config.x_range.end)
+        config.x_transform.forward(config.x_range.start)
+            ..config.x_transform.forward(config.x_range.end)
     });
 
     let y_plot_range = fix_range(if config.y_transform.is_bilinear() {
         centered_range(y_min, y_max)
     } else {
-        config.y_transform.forward(config.y_range.start)..config.y_transform.forward(config.y_range.end)
+        config.y_transform.forward(config.y_range.start)
+            ..config.y_transform.forward(config.y_range.end)
     });
 
     let y2_plot_range = fix_range(if has_secondary {
         if config.y2_transform.is_bilinear() {
             centered_range(y2_min, y2_max)
         } else {
-            config.y2_transform.forward(config.y2_range.start)..config.y2_transform.forward(config.y2_range.end)
+            config.y2_transform.forward(config.y2_range.start)
+                ..config.y2_transform.forward(config.y2_range.end)
         }
     } else {
         0.0..1.0
@@ -405,7 +425,8 @@ pub fn generate_graph_image(
 
     {
         let root = BitMapBackend::with_buffer(&mut buf, (width, height)).into_drawing_area();
-        root.fill(&WHITE).map_err(|e| GraphError::Drawing(e.to_string()))?;
+        root.fill(&WHITE)
+            .map_err(|e| GraphError::Drawing(e.to_string()))?;
 
         let mut chart_builder = ChartBuilder::on(&root);
         chart_builder
@@ -459,8 +480,16 @@ pub fn generate_graph_image(
             let border_width = (config.axis_width.unwrap_or(6.0) as f64 * scale).max(1.0) as u32;
 
             // 中央の十字線の位置
-            let center_y = if y_plot_range.contains(&0.0) { 0.0 } else { y_plot_range.start };
-            let center_x = if x_plot_range.contains(&0.0) { 0.0 } else { x_plot_range.start };
+            let center_y = if y_plot_range.contains(&0.0) {
+                0.0
+            } else {
+                y_plot_range.start
+            };
+            let center_x = if x_plot_range.contains(&0.0) {
+                0.0
+            } else {
+                x_plot_range.start
+            };
 
             if y_plot_range.contains(&0.0) {
                 chart
@@ -525,8 +554,7 @@ pub fn generate_graph_image(
 
                     chart
                         .draw_series(std::iter::once(
-                            EmptyElement::at((tx, center_y))
-                                + Text::new(label, offset, style),
+                            EmptyElement::at((tx, center_y)) + Text::new(label, offset, style),
                         ))
                         .map_err(|e| GraphError::Drawing(e.to_string()))?;
                 }
@@ -552,8 +580,7 @@ pub fn generate_graph_image(
                         .pos(Pos::new(HPos::Right, VPos::Center));
                     chart
                         .draw_series(std::iter::once(
-                            EmptyElement::at((center_x, ty))
-                                + Text::new(label, (-15, 0), style),
+                            EmptyElement::at((center_x, ty)) + Text::new(label, (-15, 0), style),
                         ))
                         .map_err(|e| GraphError::Drawing(e.to_string()))?;
                 }
@@ -584,15 +611,24 @@ pub fn generate_graph_image(
                     .y_label_formatter(&y_fmt);
 
                 match &x_ticks_resolved {
-                    Some(ticks) => { mesh.x_labels(ticks.len().max(1)); }
-                    None => { mesh.x_labels(config.x_labels); }
+                    Some(ticks) => {
+                        mesh.x_labels(ticks.len().max(1));
+                    }
+                    None => {
+                        mesh.x_labels(config.x_labels);
+                    }
                 }
                 match &y_ticks_resolved {
-                    Some(ticks) => { mesh.y_labels(ticks.len().max(1)); }
-                    None => { mesh.y_labels(config.y_labels); }
+                    Some(ticks) => {
+                        mesh.y_labels(ticks.len().max(1));
+                    }
+                    None => {
+                        mesh.y_labels(config.y_labels);
+                    }
                 }
 
-                mesh.draw().map_err(|e| GraphError::Drawing(e.to_string()))?;
+                mesh.draw()
+                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
             }
         }
 
@@ -676,7 +712,8 @@ pub fn generate_graph_image(
         if has_secondary {
             let y2_real_min = y2_transform.inverse(y2_plot_range.start);
             let y2_real_max = y2_transform.inverse(y2_plot_range.end);
-            let (y2_real_lo, y2_real_hi) = (y2_real_min.min(y2_real_max), y2_real_min.max(y2_real_max));
+            let (y2_real_lo, y2_real_hi) =
+                (y2_real_min.min(y2_real_max), y2_real_min.max(y2_real_max));
             let y2_ticks_resolved = config.y2_ticks_mode.resolve(y2_real_lo, y2_real_hi);
 
             {
@@ -691,10 +728,16 @@ pub fn generate_graph_image(
                     .label_style((font, font_size_label))
                     .y_label_formatter(&y2_fmt);
                 match &y2_ticks_resolved {
-                    Some(ticks) => { mesh2.y_labels(ticks.len().max(1)); }
-                    None => { mesh2.y_labels(config.y2_labels.max(1)); }
+                    Some(ticks) => {
+                        mesh2.y_labels(ticks.len().max(1));
+                    }
+                    None => {
+                        mesh2.y_labels(config.y2_labels.max(1));
+                    }
                 }
-                mesh2.draw().map_err(|e| GraphError::Drawing(e.to_string()))?;
+                mesh2
+                    .draw()
+                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
             }
 
             if let Some(interval) = config.y2_minor_grid_interval {
@@ -731,7 +774,8 @@ pub fn generate_graph_image(
                 .map_err(|e| GraphError::Drawing(e.to_string()))?;
         }
 
-        root.present().map_err(|e| GraphError::Drawing(e.to_string()))?;
+        root.present()
+            .map_err(|e| GraphError::Drawing(e.to_string()))?;
     }
 
     Ok(buf)
