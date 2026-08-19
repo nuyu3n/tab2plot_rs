@@ -3,1044 +3,1415 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import "./App.css";
 
-type Point = [number, number];
-type RGB = [number, number, number];
+// --- 型定義 ---
+type LineStyleType = "Solid" | "Dashed" | "Dotted" | "DashDot" | "None";
 type MarkerType = "CircleFilled" | "CircleEmpty" | "Cross" | "None";
-type TickMode =
-  | { Auto: number }
-  | { Explicit: number[] }
-  | { Interval: { base: number; offset: number } };
-type AxisTransform =
-  | "Linear"
-  | "Log10"
-  | { BiLinear: { pos_int: number; neg_int: number } };
+type LegendPosition =
+  | "UpperRight"
+  | "UpperLeft"
+  | "LowerRight"
+  | "LowerLeft"
+  | "MiddleLeft"
+  | "MiddleRight";
 
-interface SeriesForm {
+type AxisTransformType = "Linear" | "Log10" | "BiLinear";
+
+interface SeriesItem {
+  id: string;
   label: string;
-  points: Point[];
+  points: [number, number][];
   markerType: MarkerType;
   markerSize: number;
-  drawLine: boolean;
+  lineStyle: LineStyleType;
   lineWidth: number;
-  color: string;
+  color: string; // #rrggbb
   useSecondary: boolean;
 }
 
-interface GraphForm {
+interface AppGraphState {
+  // キャンバス・余白
   canvasWidth: number;
   canvasHeight: number;
   baseFontSize: number;
-  fontName: string;
-  xDesc: string;
-  yDesc: string;
-  y2Desc: string;
-  xRangeStart: number;
-  xRangeEnd: number;
-  yRangeStart: number;
-  yRangeEnd: number;
-  y2RangeStart: number;
-  y2RangeEnd: number;
-  xLabels: number;
-  yLabels: number;
-  y2Labels: number;
-  xTickMode: "Auto" | "Explicit" | "Interval";
-  yTickMode: "Auto" | "Explicit" | "Interval";
-  y2TickMode: "Auto" | "Explicit" | "Interval";
-  xAutoTicks: number;
-  yAutoTicks: number;
-  y2AutoTicks: number;
-  xExplicitTicks: string;
-  yExplicitTicks: string;
-  y2ExplicitTicks: string;
-  xIntervalBase: number;
-  xIntervalOffset: number;
-  yIntervalBase: number;
-  yIntervalOffset: number;
-  y2IntervalBase: number;
-  y2IntervalOffset: number;
-  xTickLength: number;
-  yTickLength: number;
-  xFormatFixed: number;
-  yFormatFixed: number;
-  y2FormatFixed: number;
+  margin: number;
+  xLabelArea: number;
+  yLabelArea: number;
+  rightMargin: number;
+
+  // 凡例・レイアウト
   showLegend: boolean;
-  xTransform: "Linear" | "Log10" | "BiLinear";
-  yTransform: "Linear" | "Log10" | "BiLinear";
-  y2Transform: "Linear" | "Log10" | "BiLinear";
-  xBiPos: number;
-  xBiNeg: number;
-  yBiPos: number;
-  yBiNeg: number;
-  y2BiPos: number;
-  y2BiNeg: number;
-  xMinorGridInterval: number;
-  yMinorGridInterval: number;
-  y2MinorGridInterval: number;
+  legendPosition: LegendPosition;
   useCrossAxes: boolean;
   axisWidth: number;
   minorGridWidth: number;
+
+  // X軸
+  xDesc: string;
+  xRangeStart: number;
+  xRangeEnd: number;
+  xTickMode: "Auto" | "Interval" | "Explicit";
+  xAutoTicks: number;
+  xIntervalBase: number;
+  xIntervalOffset: number;
+  xExplicitTicks: string;
+  xTickLength: number;
+  xFormatFixed: number;
+  xTransform: AxisTransformType;
+  xBiPos: number;
+  xBiNeg: number;
+  xMinorGridInterval: number;
+
+  // Y軸
+  yDesc: string;
+  yRangeStart: number;
+  yRangeEnd: number;
+  yTickMode: "Auto" | "Interval" | "Explicit";
+  yAutoTicks: number;
+  yIntervalBase: number;
+  yIntervalOffset: number;
+  yExplicitTicks: string;
+  yTickLength: number;
+  yFormatFixed: number;
+  yTransform: AxisTransformType;
+  yBiPos: number;
+  yBiNeg: number;
+  yMinorGridInterval: number;
+
+  // 第2Y軸 (Y2)
+  y2Desc: string;
+  y2RangeStart: number;
+  y2RangeEnd: number;
+  y2TickMode: "Auto" | "Interval" | "Explicit";
+  y2AutoTicks: number;
+  y2IntervalBase: number;
+  y2IntervalOffset: number;
+  y2ExplicitTicks: string;
+  y2FormatFixed: number;
+  y2Transform: AxisTransformType;
+  y2BiPos: number;
+  y2BiNeg: number;
+  y2MinorGridInterval: number;
 }
 
-interface SavedGraphCard {
-  id: number;
-  name: string;
-  graph: GraphForm;
-  previewSrc: string;
-  status: string;
-  isRendering: boolean;
-}
-
-interface CsvPreview {
-  total_rows: number;
-  sample_rows: string[][];
-}
-
-const markerOptions: MarkerType[] = [
-  "CircleFilled",
-  "CircleEmpty",
-  "Cross",
-  "None",
+const defaultColors = [
+  "#0066cc",
+  "#cc3300",
+  "#00994c",
+  "#e69f00",
+  "#9400d3",
+  "#d94389",
 ];
 
-const transformOptions: Array<GraphForm["xTransform"]> = [
-  "Linear",
-  "Log10",
-  "BiLinear",
-];
-
-const tickModeOptions: Array<GraphForm["xTickMode"]> = [
-  "Auto",
-  "Explicit",
-  "Interval",
-];
-
-const defaultSeries = (): SeriesForm => ({
-  label: "Sample A",
-  points: [
-    [0, 0],
-    [1, 10],
-    [2, 25],
-    [3, 15],
-    [4, 30],
-  ],
-  markerType: "CircleFilled",
-  markerSize: 7,
-  drawLine: true,
-  lineWidth: 3,
-  color: "#ef4444",
-  useSecondary: false,
-});
-
-const defaultGraph = (): GraphForm => ({
+const defaultGraphState: AppGraphState = {
   canvasWidth: 1600,
-  canvasHeight: 1000,
-  baseFontSize: 32,
-  fontName: "sans-serif",
+  canvasHeight: 1200,
+  baseFontSize: 36,
+  margin: 60,
+  xLabelArea: 160,
+  yLabelArea: 180,
+  rightMargin: 140,
+
+  showLegend: true,
+  legendPosition: "UpperRight",
+  useCrossAxes: false,
+  axisWidth: 3,
+  minorGridWidth: 1,
+
   xDesc: "時間 [s]",
-  yDesc: "カウント",
-  y2Desc: "",
   xRangeStart: 0,
-  xRangeEnd: 5,
-  yRangeStart: 0,
-  yRangeEnd: 40,
-  y2RangeStart: 0,
-  y2RangeEnd: 1,
-  xLabels: 5,
-  yLabels: 5,
-  y2Labels: 0,
-  xTickMode: "Auto",
-  yTickMode: "Interval",
-  y2TickMode: "Auto",
-  xAutoTicks: 5,
-  yAutoTicks: 5,
-  y2AutoTicks: 0,
-  xExplicitTicks: "0, 1, 2, 3, 4, 5",
-  yExplicitTicks: "0, 10, 20, 30, 40",
-  y2ExplicitTicks: "",
+  xRangeEnd: 6,
+  xTickMode: "Interval",
+  xAutoTicks: 6,
   xIntervalBase: 1,
   xIntervalOffset: 0,
-  yIntervalBase: 2,
-  yIntervalOffset: 0,
-  y2IntervalBase: 1,
-  y2IntervalOffset: 0,
-  xTickLength: 15,
-  yTickLength: 15,
+  xExplicitTicks: "0, 1, 2, 3, 4, 5, 6",
+  xTickLength: 10,
   xFormatFixed: 1,
-  yFormatFixed: 1,
-  y2FormatFixed: 0,
-  showLegend: true,
   xTransform: "Linear",
-  yTransform: "Linear",
-  y2Transform: "Linear",
   xBiPos: 1,
   xBiNeg: 1,
+  xMinorGridInterval: 0.5,
+
+  yDesc: "振幅 [V]",
+  yRangeStart: -1.2,
+  yRangeEnd: 1.2,
+  yTickMode: "Interval",
+  yAutoTicks: 5,
+  yIntervalBase: 0.5,
+  yIntervalOffset: 0,
+  yExplicitTicks: "-1, -0.5, 0, 0.5, 1",
+  yTickLength: 10,
+  yFormatFixed: 1,
+  yTransform: "Linear",
   yBiPos: 1,
   yBiNeg: 1,
+  yMinorGridInterval: 0.25,
+
+  y2Desc: "位相 [deg]",
+  y2RangeStart: -180,
+  y2RangeEnd: 180,
+  y2TickMode: "Auto",
+  y2AutoTicks: 5,
+  y2IntervalBase: 45,
+  y2IntervalOffset: 0,
+  y2ExplicitTicks: "-180, -90, 0, 90, 180",
+  y2FormatFixed: 0,
+  y2Transform: "Linear",
   y2BiPos: 1,
   y2BiNeg: 1,
-  xMinorGridInterval: 0.5,
-  yMinorGridInterval: 0,
   y2MinorGridInterval: 0,
-  useCrossAxes: false,
-  axisWidth: 4,
-  minorGridWidth: 1,
-});
+};
 
-function parseNumberList(value: string): number[] {
-  return value
-    .split(/[\s,]+/)
-    .map((item) => Number.parseFloat(item))
-    .filter((item) => Number.isFinite(item));
-}
-
-function hexToRgb(hex: string): RGB {
+function hexToRgb(hex: string): [number, number, number] {
   const clean = hex.replace("#", "");
-  const normalized = clean.length === 3
-    ? clean.split("").map((char) => char + char).join("")
-    : clean.padEnd(6, "0").slice(0, 6);
+  const normalized =
+    clean.length === 3
+      ? clean
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : clean.padEnd(6, "0").slice(0, 6);
   return [
-    Number.parseInt(normalized.slice(0, 2), 16),
-    Number.parseInt(normalized.slice(2, 4), 16),
-    Number.parseInt(normalized.slice(4, 6), 16),
+    parseInt(normalized.slice(0, 2), 16),
+    parseInt(normalized.slice(2, 4), 16),
+    parseInt(normalized.slice(4, 6), 16),
   ];
 }
 
-function clampRange(start: number, end: number): { start: number; end: number } {
-  if (!Number.isFinite(start) || !Number.isFinite(end) || start === end) {
-    return { start: 0, end: 1 };
-  }
-  return start < end ? { start, end } : { start: end, end: start };
+function parseNumberList(val: string): number[] {
+  return val
+    .split(/[\s,]+/)
+    .map((s) => parseFloat(s))
+    .filter((n) => Number.isFinite(n));
 }
 
-function buildTickMode(
-  kind: GraphForm["xTickMode"],
-  autoTicks: number,
-  explicitTicks: string,
-  intervalBase: number,
-  intervalOffset: number,
-): TickMode {
-  if (kind === "Explicit") {
-    return { Explicit: parseNumberList(explicitTicks) };
-  }
-  if (kind === "Interval") {
-    return { Interval: { base: intervalBase, offset: intervalOffset } };
-  }
-  return { Auto: autoTicks };
-}
-
-function buildAxisTransform(
-  kind: GraphForm["xTransform"],
-  positiveInterval: number,
-  negativeInterval: number,
-): AxisTransform {
-  if (kind === "BiLinear") {
-    return { BiLinear: { pos_int: positiveInterval, neg_int: negativeInterval } };
-  }
-  return kind;
-}
-
-function cloneGraphForm(graph: GraphForm): GraphForm {
-  return { ...graph };
-}
-
-let savedGraphCardSeed = 1;
-let handleRenderPreviewTimer: number | undefined;
-
-function createSavedGraphCard(name: string, graph: GraphForm): SavedGraphCard {
-  return {
-    id: savedGraphCardSeed++,
-    name,
-    graph: cloneGraphForm(graph),
-    previewSrc: "",
-    status: "未描画",
-    isRendering: false,
-  };
-}
-
-function getCsvColumnCount(rows: string[][]): number {
-  return rows.reduce((maxColumns, row) => Math.max(maxColumns, row.length), 0);
-}
-
-function colorToHex(rgb: RGB): string {
-  return `#${rgb.map((part) => part.toString(16).padStart(2, "0")).join("")}`;
-}
-
-function App() {
-  const [graph, setGraph] = createSignal<GraphForm>(defaultGraph());
-  const [seriesList, setSeriesList] = createSignal<SeriesForm[]>([defaultSeries()]);
-  const [previewSrc, setPreviewSrc] = createSignal("");
-  const [savedGraphs, setSavedGraphs] = createSignal<SavedGraphCard[]>([]);
-  const [csvPreview, setCsvPreview] = createSignal<CsvPreview>({
-    total_rows: 0,
-    sample_rows: [],
+export default function App() {
+  const [graph, setGraph] = createSignal<AppGraphState>({
+    ...defaultGraphState,
   });
-  const [statusMessage, setStatusMessage] = createSignal("設定を編集してプレビューを生成できます。");
-  const [isRendering, setIsRendering] = createSignal(false);
+  const [seriesList, setSeriesList] = createSignal<SeriesItem[]>([
+    {
+      id: "1",
+      label: "CH1 (sin)",
+      points: [
+        [0.0, 0.0],
+        [0.5, 0.48],
+        [1.0, 0.84],
+        [1.5, 1.0],
+        [2.0, 0.91],
+        [2.5, 0.6],
+        [3.0, 0.14],
+        [3.5, -0.35],
+        [4.0, -0.76],
+        [4.5, -0.98],
+        [5.0, -0.96],
+        [5.5, -0.71],
+        [6.0, -0.28],
+      ],
+      markerType: "CircleFilled",
+      markerSize: 4,
+      lineStyle: "Solid",
+      lineWidth: 2,
+      color: "#0066cc",
+      useSecondary: false,
+    },
+    {
+      id: "2",
+      label: "CH2 (cos)",
+      points: [
+        [0.0, 1.0],
+        [0.5, 0.88],
+        [1.0, 0.54],
+        [1.5, 0.07],
+        [2.0, -0.42],
+        [2.5, -0.8],
+        [3.0, -0.99],
+        [3.5, -0.94],
+        [4.0, -0.65],
+        [4.5, -0.21],
+        [5.0, 0.28],
+        [5.5, 0.71],
+        [6.0, 0.96],
+      ],
+      markerType: "None",
+      markerSize: 0,
+      lineStyle: "Dashed",
+      lineWidth: 2,
+      color: "#cc3300",
+      useSecondary: false,
+    },
+  ]);
 
-  const payloadConfig = (sourceGraph: GraphForm = graph()) => {
-    const current = sourceGraph;
+  const [rawText, setRawText] = createSignal("");
+  const [activeTab, setActiveTab] = createSignal<
+    "data" | "axes" | "layout" | "batch"
+  >("data");
+  const [previewSrc, setPreviewSrc] = createSignal("");
+  const [statusMessage, setStatusMessage] = createSignal("準備完了");
+  const [isRendering, setIsRendering] = createSignal(false);
+  const [batchJsonText, setBatchJsonText] = createSignal("");
+
+  // Backend 用 payload 生成
+  const buildPayloadConfig = () => {
+    const g = graph();
+    const buildTicks = (
+      mode: "Auto" | "Interval" | "Explicit",
+      autoVal: number,
+      base: number,
+      offset: number,
+      explicitStr: string,
+    ) => {
+      if (mode === "Interval") return { Interval: { base, offset } };
+      if (mode === "Explicit")
+        return { Explicit: parseNumberList(explicitStr) };
+      return { Auto: autoVal };
+    };
+
+    const buildTransform = (
+      mode: AxisTransformType,
+      pos: number,
+      neg: number,
+    ) => {
+      if (mode === "BiLinear")
+        return { BiLinear: { pos_int: pos, neg_int: neg } };
+      return mode;
+    };
+
     return {
-      base_font_size: current.baseFontSize,
-      x_desc: current.xDesc,
-      y_desc: current.yDesc,
-      y2_desc: current.y2Desc,
-      x_range: clampRange(current.xRangeStart, current.xRangeEnd),
-      y_range: clampRange(current.yRangeStart, current.yRangeEnd),
-      y2_range: clampRange(current.y2RangeStart, current.y2RangeEnd),
-      x_labels: current.xLabels,
-      y_labels: current.yLabels,
-      y2_labels: current.y2Labels,
-      x_ticks_mode: buildTickMode(
-        current.xTickMode,
-        current.xAutoTicks,
-        current.xExplicitTicks,
-        current.xIntervalBase,
-        current.xIntervalOffset,
+      base_font_size: g.baseFontSize,
+      margin: g.margin,
+      x_label_area: g.xLabelArea,
+      y_label_area: g.yLabelArea,
+      right_margin: g.rightMargin,
+      x_desc: g.xDesc,
+      y_desc: g.yDesc,
+      y2_desc: g.y2Desc,
+      x_range: { start: g.xRangeStart, end: g.xRangeEnd },
+      y_range: { start: g.yRangeStart, end: g.yRangeEnd },
+      y2_range: { start: g.y2RangeStart, end: g.y2RangeEnd },
+      x_labels: g.xAutoTicks,
+      y_labels: g.yAutoTicks,
+      y2_labels: g.y2AutoTicks,
+      x_ticks_mode: buildTicks(
+        g.xTickMode,
+        g.xAutoTicks,
+        g.xIntervalBase,
+        g.xIntervalOffset,
+        g.xExplicitTicks,
       ),
-      y_ticks_mode: buildTickMode(
-        current.yTickMode,
-        current.yAutoTicks,
-        current.yExplicitTicks,
-        current.yIntervalBase,
-        current.yIntervalOffset,
+      y_ticks_mode: buildTicks(
+        g.yTickMode,
+        g.yAutoTicks,
+        g.yIntervalBase,
+        g.yIntervalOffset,
+        g.yExplicitTicks,
       ),
-      y2_ticks_mode: buildTickMode(
-        current.y2TickMode,
-        current.y2AutoTicks,
-        current.y2ExplicitTicks,
-        current.y2IntervalBase,
-        current.y2IntervalOffset,
+      y2_ticks_mode: buildTicks(
+        g.y2TickMode,
+        g.y2AutoTicks,
+        g.y2IntervalBase,
+        g.y2IntervalOffset,
+        g.y2ExplicitTicks,
       ),
-      x_tick_length: current.xTickLength,
-      y_tick_length: current.yTickLength,
-      font_name: current.fontName,
-      x_format_fixed: current.xFormatFixed,
-      y_format_fixed: current.yFormatFixed,
-      y2_format_fixed: current.y2FormatFixed,
-      show_legend: current.showLegend,
-      x_transform: buildAxisTransform(current.xTransform, current.xBiPos, current.xBiNeg),
-      y_transform: buildAxisTransform(current.yTransform, current.yBiPos, current.yBiNeg),
-      y2_transform: buildAxisTransform(current.y2Transform, current.y2BiPos, current.y2BiNeg),
-      x_minor_grid_interval: current.xMinorGridInterval > 0 ? current.xMinorGridInterval : null,
-      y_minor_grid_interval: current.yMinorGridInterval > 0 ? current.yMinorGridInterval : null,
-      y2_minor_grid_interval: current.y2MinorGridInterval > 0 ? current.y2MinorGridInterval : null,
-      use_cross_axes: current.useCrossAxes,
-      axis_width: current.axisWidth > 0 ? current.axisWidth : null,
-      minor_grid_width: current.minorGridWidth > 0 ? current.minorGridWidth : null,
+      x_tick_length: g.xTickLength,
+      y_tick_length: g.yTickLength,
+      font_name: "",
+      x_format_fixed: g.xFormatFixed,
+      y_format_fixed: g.yFormatFixed,
+      y2_format_fixed: g.y2FormatFixed,
+      show_legend: g.showLegend,
+      legend_position: g.legendPosition,
+      x_transform: buildTransform(g.xTransform, g.xBiPos, g.xBiNeg),
+      y_transform: buildTransform(g.yTransform, g.yBiPos, g.yBiNeg),
+      y2_transform: buildTransform(g.y2Transform, g.y2BiPos, g.y2BiNeg),
+      x_minor_grid_interval:
+        g.xMinorGridInterval > 0 ? g.xMinorGridInterval : null,
+      y_minor_grid_interval:
+        g.yMinorGridInterval > 0 ? g.yMinorGridInterval : null,
+      y2_minor_grid_interval:
+        g.y2MinorGridInterval > 0 ? g.y2MinorGridInterval : null,
+      use_cross_axes: g.useCrossAxes,
+      axis_width: g.axisWidth,
+      minor_grid_width: g.minorGridWidth,
+      series_styles: seriesList().map((s) => ({
+        label: s.label,
+        color: hexToRgb(s.color),
+        marker_type: s.markerType,
+        marker_size: s.markerSize,
+        line_style: s.lineStyle,
+        line_width: s.lineWidth,
+        use_secondary: s.useSecondary,
+      })),
     };
   };
 
-  const payloadSeries = () =>
-    seriesList().map((series) => ({
-      label: series.label,
-      points: series.points,
-      marker_type: series.markerType,
-      marker_size: series.markerSize,
-      draw_line: series.drawLine,
-      line_width: series.lineWidth,
-      color: hexToRgb(series.color),
-      use_secondary: series.useSecondary,
+  const buildPayloadSeries = () => {
+    return seriesList().map((s) => ({
+      label: s.label,
+      points: s.points,
+      marker_type: s.markerType,
+      marker_size: s.markerSize,
+      line_style: s.lineStyle,
+      line_width: s.lineWidth,
+      color: hexToRgb(s.color),
+      use_secondary: s.useSecondary,
     }));
+  };
 
-  function updateSeries(index: number, updater: (series: SeriesForm) => SeriesForm) {
-    setSeriesList((current) => current.map((series, seriesIndex) => (seriesIndex === index ? updater(series) : series)));
-  }
-
-  function updatePoint(seriesIndex: number, pointIndex: number, axis: 0 | 1, value: number) {
-    updateSeries(seriesIndex, (series) => ({
-      ...series,
-      points: series.points.map((point, index) => (index === pointIndex ? ([axis === 0 ? value : point[0], axis === 1 ? value : point[1]] as Point) : point)),
-    }));
-  }
-
-  function addPoint(seriesIndex: number) {
-    updateSeries(seriesIndex, (series) => ({
-      ...series,
-      points: [...series.points, [0, 0]],
-    }));
-  }
-
-  function removePoint(seriesIndex: number, pointIndex: number) {
-    updateSeries(seriesIndex, (series) => ({
-      ...series,
-      points: series.points.filter((_, index) => index !== pointIndex),
-    }));
-  }
-
-  function addSeries() {
-    setSeriesList((current) => [
-      ...current,
-      {
-        label: `Series ${current.length + 1}`,
-        points: [[0, 0], [1, 1]],
-        markerType: "CircleFilled",
-        markerSize: 7,
-        drawLine: true,
-        lineWidth: 3,
-        color: "#0f766e",
-        useSecondary: false,
-      },
-    ]);
-  }
-
-  function duplicateSeries(index: number) {
-    setSeriesList((current) => {
-      const source = current[index];
-      if (!source) {
-        return current;
-      }
-      const next = current.slice();
-      next.splice(index + 1, 0, {
-        ...source,
-        label: `${source.label} Copy`,
-        points: source.points.map((point) => [...point] as Point),
-      });
-      return next;
-    });
-  }
-
-  function removeSeries(index: number) {
-    setSeriesList((current) => (current.length <= 1 ? current : current.filter((_, seriesIndex) => seriesIndex !== index)));
-  }
-
-  async function handleLoadCsv(seriesIndex: number) {
-    const selected = await open({
-      filters: [{ name: "CSV File", extensions: ["csv"] }],
-    });
-
-    if (!selected || Array.isArray(selected)) {
-      return;
-    }
-
-    try {
-      const [preview, importedPoints] = await Promise.all([
-        invoke<CsvPreview>("load_csv_preview", {
-          filePath: selected,
-        }),
-        invoke<Point[]>("load_points_from_csv", {
-          filePath: selected,
-        }),
-      ]);
-
-      updateSeries(seriesIndex, (series) => ({
-        ...series,
-        points: importedPoints,
-      }));
-
-      setCsvPreview({
-        total_rows: preview.total_rows,
-        sample_rows: preview.sample_rows,
-      });
-      setStatusMessage(`CSV から ${importedPoints.length} 件の点を読み込みました。`);
-    } catch (error) {
-      setStatusMessage(`CSV 読み込みエラー: ${error}`);
-    }
-  }
-
-  async function handleRenderPreview() {
-    const currentGraph = graph();
-    const currentSeries = seriesList();
-
-    const validationErrors = validateGraphSettings(currentGraph);
-    if (validationErrors.length > 0) {
-      setStatusMessage(validationErrors.join(" "));
-      return;
-    }
-
+  // プレビュー描画処理
+  async function triggerPreview() {
     setIsRendering(true);
-    setStatusMessage("tab2plot_lib で描画しています...");
-
     try {
-      const preview = await invoke<string>("render_graph_preview", {
-        config: payloadConfig(),
-        seriesList: currentSeries.map((series) => ({
-          label: series.label,
-          points: series.points,
-          marker_type: series.markerType,
-          marker_size: series.markerSize,
-          draw_line: series.drawLine,
-          line_width: series.lineWidth,
-          color: hexToRgb(series.color),
-          use_secondary: series.useSecondary,
-        })),
-        width: currentGraph.canvasWidth,
-        height: currentGraph.canvasHeight,
+      const g = graph();
+      const base64 = await invoke<string>("render_graph_base64", {
+        config: buildPayloadConfig(),
+        seriesList: buildPayloadSeries(),
+        width: g.canvasWidth,
+        height: g.canvasHeight,
       });
-      setPreviewSrc(preview);
-      setStatusMessage("プレビューを更新しました。");
-    } catch (error) {
-      setStatusMessage(`描画エラー: ${error}`);
+      setPreviewSrc(base64);
+      setStatusMessage("プレビューを更新しました");
+    } catch (err) {
+      setStatusMessage(`描画エラー: ${err}`);
     } finally {
       setIsRendering(false);
     }
   }
 
-  async function handleSavePng() {
-    const currentGraph = graph();
-
-    const validationErrors = validateGraphSettings(currentGraph);
-    if (validationErrors.length > 0) {
-      setStatusMessage(validationErrors.join(" "));
-      return;
-    }
-
-    const path = await save({
-      filters: [{ name: "PNG Image", extensions: ["png"] }],
-    });
-
-    if (!path || Array.isArray(path)) {
-      return;
-    }
-
-    try {
-      await invoke("save_graph_png", {
-        config: payloadConfig(),
-        seriesList: payloadSeries(),
-        width: currentGraph.canvasWidth,
-        height: currentGraph.canvasHeight,
-        filePath: path,
-      });
-      setStatusMessage(`PNG を保存しました: ${path}`);
-    } catch (error) {
-      setStatusMessage(`保存エラー: ${error}`);
-    }
-  }
-
-  function validateGraphSettings(current: GraphForm): string[] {
-    const errors: string[] = [];
-    if (current.xTransform === "Log10" && current.xRangeStart <= 0 && current.xRangeEnd <= 0) {
-      errors.push("X 軸の Log10 は正の範囲が必要です。");
-    }
-    if (current.yTransform === "Log10" && current.yRangeStart <= 0 && current.yRangeEnd <= 0) {
-      errors.push("Y 軸の Log10 は正の範囲が必要です。");
-    }
-    if (current.y2Transform === "Log10" && current.y2RangeStart <= 0 && current.y2RangeEnd <= 0) {
-      errors.push("Y2 軸の Log10 は正の範囲が必要です。");
-    }
-    return errors;
-  }
-
-  function addSavedGraphCard() {
-    const currentGraph = cloneGraphForm(graph());
-    setSavedGraphs((current) => [
-      ...current,
-      createSavedGraphCard(`Graph ${current.length + 1}`, currentGraph),
-    ]);
-    setStatusMessage("現在の設定を保存グラフに追加しました。");
-  }
-
-  function duplicateSavedGraphCard(index: number) {
-    setSavedGraphs((current) => {
-      const source = current[index];
-      if (!source) {
-        return current;
-      }
-
-      const next = current.slice();
-      next.splice(index + 1, 0, {
-        id: savedGraphCardSeed++,
-        name: `${source.name} Copy`,
-        graph: cloneGraphForm(source.graph),
-        previewSrc: source.previewSrc,
-        status: source.status,
-        isRendering: false,
-      });
-      return next;
-    });
-  }
-
-  function removeSavedGraphCard(index: number) {
-    setSavedGraphs((current) => current.filter((_, graphIndex) => graphIndex !== index));
-  }
-
-  function loadSavedGraphCard(index: number) {
-    const card = savedGraphs()[index];
-    if (!card) {
-      return;
-    }
-
-    setGraph(cloneGraphForm(card.graph));
-    setStatusMessage(`保存グラフ「${card.name}」を編集画面に読み込みました。`);
-  }
-
-  async function renderSavedGraphCard(index: number) {
-    const card = savedGraphs()[index];
-    if (!card) {
-      return;
-    }
-
-    const validationErrors = validateGraphSettings(card.graph);
-    if (validationErrors.length > 0) {
-      setSavedGraphs((current) =>
-        current.map((item, graphIndex) =>
-          graphIndex === index
-            ? { ...item, status: validationErrors.join(" "), isRendering: false }
-            : item,
-        ),
-      );
-      return;
-    }
-
-    setSavedGraphs((current) =>
-      current.map((item, graphIndex) => (graphIndex === index ? { ...item, isRendering: true, status: "描画中..." } : item)),
-    );
-
-    try {
-      const preview = await invoke<string>("render_graph_preview", {
-        config: payloadConfig(card.graph),
-        seriesList: payloadSeries(),
-        width: card.graph.canvasWidth,
-        height: card.graph.canvasHeight,
-      });
-
-      setSavedGraphs((current) =>
-        current.map((item, graphIndex) =>
-          graphIndex === index
-            ? { ...item, previewSrc: preview, status: "プレビュー更新済み", isRendering: false }
-            : item,
-        ),
-      );
-    } catch (error) {
-      setSavedGraphs((current) =>
-        current.map((item, graphIndex) =>
-          graphIndex === index ? { ...item, status: `描画エラー: ${error}`, isRendering: false } : item,
-        ),
-      );
-    }
-  }
-
-  async function renderAllSavedGraphs() {
-    const cards = savedGraphs();
-
-    if (cards.length === 0) {
-      setStatusMessage("保存グラフがないため、一括描画はできません。");
-      return;
-    }
-
-    setStatusMessage("保存グラフを順に描画しています...");
-    for (let index = 0; index < cards.length; index += 1) {
-      // eslint-disable-next-line no-await-in-loop
-      await renderSavedGraphCard(index);
-    }
-    setStatusMessage("保存グラフの一括描画が完了しました。");
-  }
-
+  // 自動再描画 (debounce)
+  let timer: number | undefined;
   createEffect(() => {
     graph();
     seriesList();
-    if (handleRenderPreviewTimer !== undefined) {
-      window.clearTimeout(handleRenderPreviewTimer);
-    }
-    handleRenderPreviewTimer = window.setTimeout(() => {
-      void handleRenderPreview();
-    }, 350);
+    if (timer) clearTimeout(timer);
+    timer = window.setTimeout(() => {
+      triggerPreview();
+    }, 250);
   });
 
+  // TSV/CSV テキストのパース
+  async function handleParseRawText() {
+    if (!rawText().trim()) return;
+    try {
+      const parsed = await invoke<any[]>("parse_table_data", {
+        tableText: rawText(),
+        delimiter: null,
+        config: buildPayloadConfig(),
+      });
+
+      const nextList: SeriesItem[] = parsed.map((p, idx) => ({
+        id: String(Date.now() + idx),
+        label: p.label || `Series ${idx + 1}`,
+        points: p.points,
+        markerType: p.marker_type,
+        markerSize: p.marker_size,
+        lineStyle: p.line_style,
+        lineWidth: p.line_width,
+        color: defaultColors[idx % defaultColors.length],
+        useSecondary: p.use_secondary,
+      }));
+
+      setSeriesList(nextList);
+      autoScaleRange(nextList);
+      setStatusMessage(`${nextList.length} 件の系列をインポートしました`);
+    } catch (err) {
+      setStatusMessage(`パースエラー: ${err}`);
+    }
+  }
+
+  // ファイルから直接インポート
+  async function handleImportFile() {
+    const selected = await open({
+      filters: [{ name: "Data File", extensions: ["tsv", "csv", "txt"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+
+    try {
+      const preview = await invoke<{ sample_rows: string[][] }>(
+        "load_csv_preview",
+        {
+          filePath: selected,
+        },
+      );
+      const lines = preview.sample_rows.map((row) => row.join("\t")).join("\n");
+      setRawText(lines);
+      setStatusMessage(`ファイルを読み込みました: ${selected}`);
+    } catch (err) {
+      setStatusMessage(`ファイル読込エラー: ${err}`);
+    }
+  }
+
+  // データ範囲の自動調整
+  function autoScaleRange(targetSeries = seriesList()) {
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (const s of targetSeries) {
+      for (const [x, y] of s.points) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+
+    if (minX !== Infinity && maxX !== -Infinity) {
+      const yPad = (maxY - minY) * 0.1 || 1.0;
+      setGraph((g) => ({
+        ...g,
+        xRangeStart: minX,
+        xRangeEnd: maxX,
+        yRangeStart: parseFloat((minY - yPad).toFixed(2)),
+        yRangeEnd: parseFloat((maxY + yPad).toFixed(2)),
+      }));
+    }
+  }
+
+  // 単一 PNG 保存
+  async function handleSaveSinglePng() {
+    const selected = await save({
+      filters: [{ name: "PNG Image", extensions: ["png"] }],
+      defaultPath: "graph.png",
+    });
+    if (!selected) return;
+
+    try {
+      const g = graph();
+      await invoke("save_graph_png", {
+        config: buildPayloadConfig(),
+        seriesList: buildPayloadSeries(),
+        width: g.canvasWidth,
+        height: g.canvasHeight,
+        filePath: selected,
+      });
+      setStatusMessage(`PNG を保存しました: ${selected}`);
+    } catch (err) {
+      setStatusMessage(`保存エラー: ${err}`);
+    }
+  }
+
+  // バッチ実行
+  async function handleRunBatch() {
+    if (!batchJsonText().trim()) return;
+    try {
+      await invoke("run_batch_json", { batchJson: batchJsonText() });
+      setStatusMessage("バッチ処理が完了しました");
+    } catch (err) {
+      setStatusMessage(`バッチ実行エラー: ${err}`);
+    }
+  }
+
   return (
-    <main class="app-shell">
-      <section class="hero">
-        <div>
-          <p class="eyebrow">tab2plot workspace</p>
-          <h1>tab2plot_lib を直接操作するグラフ編集画面</h1>
-          <p class="hero-copy">
-            Rust の描画エンジンにそのまま設定を送り、プレビューと PNG 出力を同じデータで扱います。
-          </p>
-        </div>
-        <div class="hero-actions">
-          <button class="primary-button" onClick={handleRenderPreview} disabled={isRendering()}>
-            {isRendering() ? "描画中..." : "プレビュー更新"}
-          </button>
-          <button class="secondary-button" onClick={addSavedGraphCard}>
-            現在を保存グラフに追加
-          </button>
-          <button class="secondary-button" onClick={renderAllSavedGraphs}>
-            保存グラフを一括描画
-          </button>
-          <button class="secondary-button" onClick={handleSavePng}>
-            PNG を保存
-          </button>
-        </div>
-      </section>
-
-      <section class="workspace-grid">
-        <div class="editor-column">
-          <div class="panel">
-            <div class="panel-header">
-              <h2>キャンバス</h2>
-              <span>描画サイズと見た目</span>
-            </div>
-            <div class="field-grid two-up">
-              <label>
-                <span>幅</span>
-                <input type="number" min="400" step="10" value={graph().canvasWidth} onInput={(event) => setGraph((current) => ({ ...current, canvasWidth: Number.parseInt(event.currentTarget.value) || 1600 }))} />
-              </label>
-              <label>
-                <span>高さ</span>
-                <input type="number" min="300" step="10" value={graph().canvasHeight} onInput={(event) => setGraph((current) => ({ ...current, canvasHeight: Number.parseInt(event.currentTarget.value) || 1000 }))} />
-              </label>
-              <label>
-                <span>ベースフォントサイズ</span>
-                <input type="number" min="10" step="1" value={graph().baseFontSize} onInput={(event) => setGraph((current) => ({ ...current, baseFontSize: Number.parseInt(event.currentTarget.value) || 32 }))} />
-              </label>
-              <label>
-                <span>フォント名</span>
-                <input type="text" value={graph().fontName} onInput={(event) => setGraph((current) => ({ ...current, fontName: event.currentTarget.value }))} />
-              </label>
-              <label class="toggle-row">
-                <span>凡例を表示</span>
-                <input type="checkbox" checked={graph().showLegend} onChange={(event) => setGraph((current) => ({ ...current, showLegend: event.currentTarget.checked }))} />
-              </label>
-              <label class="toggle-row">
-                <span>十字軸モード</span>
-                <input type="checkbox" checked={graph().useCrossAxes} onChange={(event) => setGraph((current) => ({ ...current, useCrossAxes: event.currentTarget.checked }))} />
-              </label>
-              <label>
-                <span>軸の太さ</span>
-                <input type="number" min="0" step="0.5" value={graph().axisWidth} onInput={(event) => setGraph((current) => ({ ...current, axisWidth: Number.parseFloat(event.currentTarget.value) || 0 }))} />
-              </label>
-              <label>
-                <span>補助線の太さ</span>
-                <input type="number" min="0" step="0.5" value={graph().minorGridWidth} onInput={(event) => setGraph((current) => ({ ...current, minorGridWidth: Number.parseFloat(event.currentTarget.value) || 0 }))} />
-              </label>
-            </div>
-          </div>
-
-          <div class="panel">
-            <div class="panel-header">
-              <h2>軸設定</h2>
-              <span>ラベル、範囲、目盛り、変換</span>
-            </div>
-            <div class="axis-card">
-              <h3>X 軸</h3>
-              <div class="field-grid three-up">
-                <label><span>ラベル</span><input type="text" value={graph().xDesc} onInput={(event) => setGraph((current) => ({ ...current, xDesc: event.currentTarget.value }))} /></label>
-                <label><span>範囲開始</span><input type="number" step="0.1" value={graph().xRangeStart} onInput={(event) => setGraph((current) => ({ ...current, xRangeStart: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>範囲終了</span><input type="number" step="0.1" value={graph().xRangeEnd} onInput={(event) => setGraph((current) => ({ ...current, xRangeEnd: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>ラベル数</span><input type="number" min="0" step="1" value={graph().xLabels} onInput={(event) => setGraph((current) => ({ ...current, xLabels: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>Tick モード</span>
-                    <select value={graph().xTickMode} onChange={(event) => setGraph((current) => ({ ...current, xTickMode: event.currentTarget.value as GraphForm["xTickMode"] }))}>
-                    <For each={tickModeOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                  </select>
-                </label>
-                <label><span>表示桁数</span><input type="number" min="0" step="1" value={graph().xFormatFixed} onInput={(event) => setGraph((current) => ({ ...current, xFormatFixed: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>目盛り長さ</span><input type="number" min="0" step="1" value={graph().xTickLength} onInput={(event) => setGraph((current) => ({ ...current, xTickLength: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>変換</span>
-                  <select value={graph().xTransform} onChange={(event) => setGraph((current) => ({ ...current, xTransform: event.currentTarget.value as GraphForm["xTransform"] }))}>
-                    <For each={transformOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                  </select>
-                </label>
-                <label><span>BiLinear +</span><input type="number" step="0.1" value={graph().xBiPos} onInput={(event) => setGraph((current) => ({ ...current, xBiPos: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>BiLinear -</span><input type="number" step="0.1" value={graph().xBiNeg} onInput={(event) => setGraph((current) => ({ ...current, xBiNeg: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>補助線間隔</span><input type="number" step="0.1" value={graph().xMinorGridInterval} onInput={(event) => setGraph((current) => ({ ...current, xMinorGridInterval: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-              </div>
-              {graph().xTickMode === "Explicit" && (
-                <label class="full-width">
-                  <span>明示的な目盛り</span>
-                  <textarea value={graph().xExplicitTicks} onInput={(event) => setGraph((current) => ({ ...current, xExplicitTicks: event.currentTarget.value }))} />
-                </label>
-              )}
-              {graph().xTickMode === "Interval" && (
-                <div class="field-grid two-up compact">
-                  <label><span>Base</span><input type="number" step="0.1" value={graph().xIntervalBase} onInput={(event) => setGraph((current) => ({ ...current, xIntervalBase: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                  <label><span>Offset</span><input type="number" step="0.1" value={graph().xIntervalOffset} onInput={(event) => setGraph((current) => ({ ...current, xIntervalOffset: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-                </div>
-              )}
-            </div>
-
-            <div class="axis-card">
-              <h3>Y 軸</h3>
-              <div class="field-grid three-up">
-                <label><span>ラベル</span><input type="text" value={graph().yDesc} onInput={(event) => setGraph((current) => ({ ...current, yDesc: event.currentTarget.value }))} /></label>
-                <label><span>範囲開始</span><input type="number" step="0.1" value={graph().yRangeStart} onInput={(event) => setGraph((current) => ({ ...current, yRangeStart: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>範囲終了</span><input type="number" step="0.1" value={graph().yRangeEnd} onInput={(event) => setGraph((current) => ({ ...current, yRangeEnd: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>ラベル数</span><input type="number" min="0" step="1" value={graph().yLabels} onInput={(event) => setGraph((current) => ({ ...current, yLabels: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>Tick モード</span>
-                    <select value={graph().yTickMode} onChange={(event) => setGraph((current) => ({ ...current, yTickMode: event.currentTarget.value as GraphForm["yTickMode"] }))}>
-                    <For each={tickModeOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                  </select>
-                </label>
-                <label><span>表示桁数</span><input type="number" min="0" step="1" value={graph().yFormatFixed} onInput={(event) => setGraph((current) => ({ ...current, yFormatFixed: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>目盛り長さ</span><input type="number" min="0" step="1" value={graph().yTickLength} onInput={(event) => setGraph((current) => ({ ...current, yTickLength: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>変換</span>
-                  <select value={graph().yTransform} onChange={(event) => setGraph((current) => ({ ...current, yTransform: event.currentTarget.value as GraphForm["yTransform"] }))}>
-                    <For each={transformOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                  </select>
-                </label>
-                <label><span>BiLinear +</span><input type="number" step="0.1" value={graph().yBiPos} onInput={(event) => setGraph((current) => ({ ...current, yBiPos: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>BiLinear -</span><input type="number" step="0.1" value={graph().yBiNeg} onInput={(event) => setGraph((current) => ({ ...current, yBiNeg: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>補助線間隔</span><input type="number" step="0.1" value={graph().yMinorGridInterval} onInput={(event) => setGraph((current) => ({ ...current, yMinorGridInterval: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-              </div>
-              {graph().yTickMode === "Explicit" && (
-                <label class="full-width">
-                  <span>明示的な目盛り</span>
-                  <textarea value={graph().yExplicitTicks} onInput={(event) => setGraph((current) => ({ ...current, yExplicitTicks: event.currentTarget.value }))} />
-                </label>
-              )}
-              {graph().yTickMode === "Interval" && (
-                <div class="field-grid two-up compact">
-                  <label><span>Base</span><input type="number" step="0.1" value={graph().yIntervalBase} onInput={(event) => setGraph((current) => ({ ...current, yIntervalBase: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                  <label><span>Offset</span><input type="number" step="0.1" value={graph().yIntervalOffset} onInput={(event) => setGraph((current) => ({ ...current, yIntervalOffset: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-                </div>
-              )}
-            </div>
-
-            <div class="axis-card">
-              <h3>Y2 軸</h3>
-              <div class="field-grid three-up">
-                <label><span>ラベル</span><input type="text" value={graph().y2Desc} onInput={(event) => setGraph((current) => ({ ...current, y2Desc: event.currentTarget.value }))} /></label>
-                <label><span>範囲開始</span><input type="number" step="0.1" value={graph().y2RangeStart} onInput={(event) => setGraph((current) => ({ ...current, y2RangeStart: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>範囲終了</span><input type="number" step="0.1" value={graph().y2RangeEnd} onInput={(event) => setGraph((current) => ({ ...current, y2RangeEnd: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>ラベル数</span><input type="number" min="0" step="1" value={graph().y2Labels} onInput={(event) => setGraph((current) => ({ ...current, y2Labels: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>Tick モード</span>
-                    <select value={graph().y2TickMode} onChange={(event) => setGraph((current) => ({ ...current, y2TickMode: event.currentTarget.value as GraphForm["y2TickMode"] }))}>
-                    <For each={tickModeOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                  </select>
-                </label>
-                <label><span>表示桁数</span><input type="number" min="0" step="1" value={graph().y2FormatFixed} onInput={(event) => setGraph((current) => ({ ...current, y2FormatFixed: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                <label><span>変換</span>
-                  <select value={graph().y2Transform} onChange={(event) => setGraph((current) => ({ ...current, y2Transform: event.currentTarget.value as GraphForm["y2Transform"] }))}>
-                    <For each={transformOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                  </select>
-                </label>
-                <label><span>BiLinear +</span><input type="number" step="0.1" value={graph().y2BiPos} onInput={(event) => setGraph((current) => ({ ...current, y2BiPos: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>BiLinear -</span><input type="number" step="0.1" value={graph().y2BiNeg} onInput={(event) => setGraph((current) => ({ ...current, y2BiNeg: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                <label><span>補助線間隔</span><input type="number" step="0.1" value={graph().y2MinorGridInterval} onInput={(event) => setGraph((current) => ({ ...current, y2MinorGridInterval: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-              </div>
-              {graph().y2TickMode === "Explicit" && (
-                <label class="full-width">
-                  <span>明示的な目盛り</span>
-                  <textarea value={graph().y2ExplicitTicks} onInput={(event) => setGraph((current) => ({ ...current, y2ExplicitTicks: event.currentTarget.value }))} />
-                </label>
-              )}
-              {graph().y2TickMode === "Interval" && (
-                <div class="field-grid two-up compact">
-                  <label><span>Base</span><input type="number" step="0.1" value={graph().y2IntervalBase} onInput={(event) => setGraph((current) => ({ ...current, y2IntervalBase: Number.parseFloat(event.currentTarget.value) || 1 }))} /></label>
-                  <label><span>Offset</span><input type="number" step="0.1" value={graph().y2IntervalOffset} onInput={(event) => setGraph((current) => ({ ...current, y2IntervalOffset: Number.parseFloat(event.currentTarget.value) || 0 }))} /></label>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div class="panel series-panel">
-            <div class="panel-header with-actions">
-              <div>
-                <h2>系列</h2>
-                <span>tab2plot_lib の SeriesData に対応</span>
-              </div>
-              <button class="secondary-button" onClick={addSeries}>系列を追加</button>
-            </div>
-
-            <For each={seriesList()}>
-              {(series, seriesIndex) => (
-                <div class="series-card">
-                  <div class="series-toolbar">
-                    <input
-                      type="text"
-                      value={series.label}
-                      onInput={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, label: event.currentTarget.value }))}
-                    />
-                    <label class="toggle-row compact-toggle">
-                      <span>右軸</span>
-                      <input type="checkbox" checked={series.useSecondary} onChange={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, useSecondary: event.currentTarget.checked }))} />
-                    </label>
-                    <button class="ghost-button" onClick={() => handleLoadCsv(seriesIndex())}>CSV 読込</button>
-                    <button class="ghost-button" onClick={() => duplicateSeries(seriesIndex())}>複製</button>
-                    <button class="danger-button" onClick={() => removeSeries(seriesIndex())}>削除</button>
-                  </div>
-
-                  <div class="field-grid four-up">
-                    <label>
-                      <span>マーカー</span>
-                      <select value={series.markerType} onChange={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, markerType: event.currentTarget.value as MarkerType }))}>
-                        <For each={markerOptions}>{(option) => <option value={option}>{option}</option>}</For>
-                      </select>
-                    </label>
-                    <label><span>サイズ</span><input type="number" min="0" step="1" value={series.markerSize} onInput={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, markerSize: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                    <label class="toggle-row"><span>線を描く</span><input type="checkbox" checked={series.drawLine} onChange={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, drawLine: event.currentTarget.checked }))} /></label>
-                    <label><span>線の太さ</span><input type="number" min="0" step="1" value={series.lineWidth} onInput={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, lineWidth: Number.parseInt(event.currentTarget.value) || 0 }))} /></label>
-                    <label>
-                      <span>色</span>
-                      <input type="color" value={series.color} onInput={(event) => updateSeries(seriesIndex(), (current) => ({ ...current, color: event.currentTarget.value }))} />
-                    </label>
-                  </div>
-
-                  <div class="point-table-wrap">
-                    <table class="point-table">
-                      <thead>
-                        <tr>
-                          <th>X</th>
-                          <th>Y</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <For each={series.points}>
-                          {(point, pointIndex) => (
-                            <tr>
-                              <td>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  value={point[0]}
-                                  onInput={(event) => updatePoint(seriesIndex(), pointIndex(), 0, Number.parseFloat(event.currentTarget.value) || 0)}
-                                />
-                              </td>
-                              <td>
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  value={point[1]}
-                                  onInput={(event) => updatePoint(seriesIndex(), pointIndex(), 1, Number.parseFloat(event.currentTarget.value) || 0)}
-                                />
-                              </td>
-                              <td>
-                                <button class="tiny-button" onClick={() => removePoint(seriesIndex(), pointIndex())}>削除</button>
-                              </td>
-                            </tr>
-                          )}
-                        </For>
-                      </tbody>
-                    </table>
-                  </div>
-
-                  <button class="secondary-button full-width-button" onClick={() => addPoint(seriesIndex())}>点を追加</button>
-                </div>
-              )}
-            </For>
-          </div>
-
-          <div class="panel csv-panel">
-            <div class="panel-header with-actions">
-              <div>
-                <h2>CSV プレビュー</h2>
-                <span>読み込んだ元データをそのまま確認</span>
-              </div>
-              <span>{csvPreview().total_rows} 行</span>
-            </div>
-            <p>{csvPreview().sample_rows.length > 0 ? "先頭の行を表形式で表示しています。" : "まだ CSV が読み込まれていません。"}</p>
-            <div class="csv-table-wrap">
-              <table class="csv-table">
-                <thead>
-                  <tr>
-                    <th>#</th>
-                    <For each={Array.from({ length: getCsvColumnCount(csvPreview().sample_rows) })}>
-                      {(_, index) => <th>列 {index() + 1}</th>}
-                    </For>
-                  </tr>
-                </thead>
-                <tbody>
-                  <For each={csvPreview().sample_rows}>
-                    {(row, rowIndex) => (
-                      <tr>
-                        <td>{rowIndex() + 1}</td>
-                        <For each={Array.from({ length: getCsvColumnCount(csvPreview().sample_rows) })}>
-                          {(_, columnIndex) => <td>{row[columnIndex()] ?? ""}</td>}
-                        </For>
-                      </tr>
-                    )}
-                  </For>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <div class="panel status-panel">
-            <div class="panel-header">
-              <h2>状態</h2>
-              <span>Rust 側の結果</span>
-            </div>
-            <p>{statusMessage()}</p>
-            <div class="meta-grid">
-              <div>
-                <strong>{seriesList().length}</strong>
-                <span>系列</span>
-              </div>
-              <div>
-                <strong>{seriesList().reduce((count, series) => count + series.points.length, 0)}</strong>
-                <span>点</span>
-              </div>
-              <div>
-                <strong>{graph().canvasWidth}×{graph().canvasHeight}</strong>
-                <span>出力サイズ</span>
-              </div>
-            </div>
-          </div>
+    <div class="app-layout">
+      {/* --- ヘッダー --- */}
+      <header class="app-header">
+        <div class="brand">
+          <h1>tab2plot</h1>
+          <span class="version-tag">Engine v0.1</span>
         </div>
 
-        <div class="preview-column">
-          <div class="panel preview-panel">
-            <div class="panel-header with-actions">
-              <div>
-                <h2>プレビュー</h2>
-                <span>レンダリング結果の確認</span>
-              </div>
-              <button class="secondary-button" onClick={handleRenderPreview} disabled={isRendering()}>
-                {isRendering() ? "更新中..." : "再描画"}
-              </button>
-            </div>
-            <Show when={previewSrc()} fallback={<div class="empty-preview">プレビューを生成するとここに表示されます。</div>}>
-              <img class="preview-image" src={previewSrc()} alt="tab2plot preview" />
-            </Show>
+        <div class="header-status">
+          <span
+            class="status-indicator"
+            classList={{ active: isRendering() }}
+          />
+          <span class="status-text">{statusMessage()}</span>
+        </div>
+
+        <div class="header-actions">
+          <button
+            class="btn btn-secondary"
+            onClick={triggerPreview}
+            disabled={isRendering()}
+          >
+            {isRendering() ? "描画中..." : "再描画"}
+          </button>
+          <button class="btn btn-primary" onClick={handleSaveSinglePng}>
+            PNG 保存
+          </button>
+        </div>
+      </header>
+
+      {/* --- メインコンテンツ --- */}
+      <main class="app-main">
+        {/* 左カラム: 設定パネル */}
+        <section class="control-panel">
+          <div class="tab-bar">
+            <button
+              class="tab-btn"
+              classList={{ active: activeTab() === "data" }}
+              onClick={() => setActiveTab("data")}
+            >
+              データ & 系列
+            </button>
+            <button
+              class="tab-btn"
+              classList={{ active: activeTab() === "axes" }}
+              onClick={() => setActiveTab("axes")}
+            >
+              軸 & スケール
+            </button>
+            <button
+              class="tab-btn"
+              classList={{ active: activeTab() === "layout" }}
+              onClick={() => setActiveTab("layout")}
+            >
+              余白 & スタイル
+            </button>
+            <button
+              class="tab-btn"
+              classList={{ active: activeTab() === "batch" }}
+              onClick={() => setActiveTab("batch")}
+            >
+              バッチ設定
+            </button>
           </div>
 
-          <div class="panel gallery-panel">
-            <div class="panel-header with-actions">
-              <div>
-                <h2>保存グラフ</h2>
-                <span>複数グラフをまとめて作成・比較</span>
+          <div class="tab-content">
+            {/* 1. データ & 系列タブ */}
+            <Show when={activeTab() === "data"}>
+              <div class="section-card">
+                <h3>TSV / CSV データ入力</h3>
+                <textarea
+                  class="data-textarea"
+                  placeholder="time&#9;ch1&#9;ch2&#10;0.0&#9;0.0&#9;1.0&#10;1.0&#9;0.84&#9;0.54"
+                  value={rawText()}
+                  onInput={(e) => setRawText(e.currentTarget.value)}
+                />
+                <div class="btn-group">
+                  <button class="btn btn-secondary" onClick={handleImportFile}>
+                    ファイルから読込
+                  </button>
+                  <button class="btn btn-accent" onClick={handleParseRawText}>
+                    データをパースして反映
+                  </button>
+                  <button
+                    class="btn btn-ghost"
+                    onClick={() => autoScaleRange()}
+                  >
+                    自動範囲調整
+                  </button>
+                </div>
               </div>
-              <button class="secondary-button" onClick={renderAllSavedGraphs} disabled={savedGraphs().length === 0}>
-                まとめて更新
-              </button>
-            </div>
 
-            <Show when={savedGraphs().length > 0} fallback={<div class="empty-preview">現在の設定を保存グラフに追加すると、ここに複数グラフが並びます。</div>}>
-              <div class="gallery-grid">
-                <For each={savedGraphs()}>
-                  {(card, index) => (
-                    <article class="graph-card">
-                      <div class="graph-card-header">
+              <div class="section-card">
+                <div class="section-header">
+                  <h3>系列スタイル設定 ({seriesList().length})</h3>
+                  <button
+                    class="btn btn-small btn-secondary"
+                    onClick={() =>
+                      setSeriesList((list) => [
+                        ...list,
+                        {
+                          id: String(Date.now()),
+                          label: `Series ${list.length + 1}`,
+                          points: [],
+                          markerType: "CircleFilled",
+                          markerSize: 4,
+                          lineStyle: "Solid",
+                          lineWidth: 2,
+                          color:
+                            defaultColors[list.length % defaultColors.length],
+                          useSecondary: false,
+                        },
+                      ])
+                    }
+                  >
+                    + 系列追加
+                  </button>
+                </div>
+
+                <For each={seriesList()}>
+                  {(s, idx) => (
+                    <div class="series-row">
+                      <div class="series-header">
                         <input
-                          class="graph-card-name"
-                          type="text"
-                          value={card.name}
-                          onInput={(event) =>
-                            setSavedGraphs((current) =>
-                              current.map((item, graphIndex) =>
-                                graphIndex === index() ? { ...item, name: event.currentTarget.value } : item,
+                          type="color"
+                          class="color-picker"
+                          value={s.color}
+                          onInput={(e) =>
+                            setSeriesList((list) =>
+                              list.map((item, i) =>
+                                i === idx()
+                                  ? { ...item, color: e.currentTarget.value }
+                                  : item,
                               ),
                             )
                           }
                         />
-                        <span class={card.isRendering ? "status-chip busy" : "status-chip"}>{card.isRendering ? "描画中" : card.status}</span>
-                      </div>
-                      <div class="graph-card-meta">
-                        <span>{card.graph.canvasWidth}×{card.graph.canvasHeight}</span>
-                        <span>{card.graph.showLegend ? "凡例あり" : "凡例なし"}</span>
-                      </div>
-                      <div class="graph-card-preview">
-                        <Show when={card.previewSrc} fallback={<div class="graph-card-placeholder">未描画</div>}>
-                          <img class="preview-image" src={card.previewSrc} alt={card.name} />
-                        </Show>
-                      </div>
-                      <div class="graph-card-actions">
-                        <button class="tiny-button" onClick={() => loadSavedGraphCard(index())}>読み込み</button>
-                        <button class="tiny-button" onClick={() => renderSavedGraphCard(index())}>
-                          更新
+                        <input
+                          type="text"
+                          class="input-text series-name-input"
+                          value={s.label}
+                          onInput={(e) =>
+                            setSeriesList((list) =>
+                              list.map((item, i) =>
+                                i === idx()
+                                  ? { ...item, label: e.currentTarget.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                        <label class="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={s.useSecondary}
+                            onChange={(e) =>
+                              setSeriesList((list) =>
+                                list.map((item, i) =>
+                                  i === idx()
+                                    ? {
+                                        ...item,
+                                        useSecondary: e.currentTarget.checked,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          右軸(Y2)
+                        </label>
+                        <button
+                          class="btn-icon danger"
+                          onClick={() =>
+                            setSeriesList((list) =>
+                              list.filter((_, i) => i !== idx()),
+                            )
+                          }
+                        >
+                          ✕
                         </button>
-                        <button class="tiny-button" onClick={() => duplicateSavedGraphCard(index())}>複製</button>
-                        <button class="danger-button" onClick={() => removeSavedGraphCard(index())}>削除</button>
                       </div>
-                    </article>
+
+                      <div class="grid-4">
+                        <label class="form-group">
+                          <span>線種</span>
+                          <select
+                            class="input-select"
+                            value={s.lineStyle}
+                            onChange={(e) =>
+                              setSeriesList((list) =>
+                                list.map((item, i) =>
+                                  i === idx()
+                                    ? {
+                                        ...item,
+                                        lineStyle: e.currentTarget
+                                          .value as LineStyleType,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          >
+                            <option value="Solid">実線 (Solid)</option>
+                            <option value="Dashed">破線 (Dashed)</option>
+                            <option value="Dotted">点線 (Dotted)</option>
+                            <option value="DashDot">一点鎖線 (DashDot)</option>
+                            <option value="None">線なし (None)</option>
+                          </select>
+                        </label>
+
+                        <label class="form-group">
+                          <span>線幅 (px)</span>
+                          <input
+                            type="number"
+                            class="input-number"
+                            min="1"
+                            max="10"
+                            value={s.lineWidth}
+                            onInput={(e) =>
+                              setSeriesList((list) =>
+                                list.map((item, i) =>
+                                  i === idx()
+                                    ? {
+                                        ...item,
+                                        lineWidth:
+                                          parseInt(e.currentTarget.value) || 1,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+
+                        <label class="form-group">
+                          <span>点 (Marker)</span>
+                          <select
+                            class="input-select"
+                            value={s.markerType}
+                            onChange={(e) =>
+                              setSeriesList((list) =>
+                                list.map((item, i) =>
+                                  i === idx()
+                                    ? {
+                                        ...item,
+                                        markerType: e.currentTarget
+                                          .value as MarkerType,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          >
+                            <option value="CircleFilled">
+                              塗り円 (CircleFilled)
+                            </option>
+                            <option value="CircleEmpty">
+                              白抜き円 (CircleEmpty)
+                            </option>
+                            <option value="Cross">十字 (Cross)</option>
+                            <option value="None">なし (None)</option>
+                          </select>
+                        </label>
+
+                        <label class="form-group">
+                          <span>点サイズ</span>
+                          <input
+                            type="number"
+                            class="input-number"
+                            min="0"
+                            max="20"
+                            value={s.markerSize}
+                            onInput={(e) =>
+                              setSeriesList((list) =>
+                                list.map((item, i) =>
+                                  i === idx()
+                                    ? {
+                                        ...item,
+                                        markerSize:
+                                          parseInt(e.currentTarget.value) || 0,
+                                      }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
                   )}
                 </For>
               </div>
             </Show>
+
+            {/* 2. 軸 & スケールタブ */}
+            <Show when={activeTab() === "axes"}>
+              <div class="section-card">
+                <h3>X 軸 (横軸)</h3>
+                <div class="grid-3">
+                  <label class="form-group">
+                    <span>タイトル</span>
+                    <input
+                      type="text"
+                      class="input-text"
+                      value={graph().xDesc}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xDesc: e.currentTarget.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>開始</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().xRangeStart}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xRangeStart: parseFloat(e.currentTarget.value) || 0,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>終了</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().xRangeEnd}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xRangeEnd: parseFloat(e.currentTarget.value) || 1,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div class="grid-3">
+                  <label class="form-group">
+                    <span>変換</span>
+                    <select
+                      class="input-select"
+                      value={graph().xTransform}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xTransform: e.currentTarget
+                            .value as AxisTransformType,
+                        }))
+                      }
+                    >
+                      <option value="Linear">Linear (線形)</option>
+                      <option value="Log10">Log10 (対数)</option>
+                      <option value="BiLinear">BiLinear (原点両方向)</option>
+                    </select>
+                  </label>
+
+                  <label class="form-group">
+                    <span>目盛りモード</span>
+                    <select
+                      class="input-select"
+                      value={graph().xTickMode}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xTickMode: e.currentTarget.value as any,
+                        }))
+                      }
+                    >
+                      <option value="Interval">Interval (ステップ)</option>
+                      <option value="Auto">Auto (本数指定)</option>
+                      <option value="Explicit">Explicit (明示リスト)</option>
+                    </select>
+                  </label>
+
+                  <label class="form-group">
+                    <span>補助グリッド間隔</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().xMinorGridInterval}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xMinorGridInterval:
+                            parseFloat(e.currentTarget.value) || 0,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <Show when={graph().xTickMode === "Interval"}>
+                  <div class="grid-2 sub-panel">
+                    <label class="form-group">
+                      <span>間隔 (Base)</span>
+                      <input
+                        type="number"
+                        step="any"
+                        class="input-number"
+                        value={graph().xIntervalBase}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            xIntervalBase:
+                              parseFloat(e.currentTarget.value) || 1,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label class="form-group">
+                      <span>オフセット (Offset)</span>
+                      <input
+                        type="number"
+                        step="any"
+                        class="input-number"
+                        value={graph().xIntervalOffset}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            xIntervalOffset:
+                              parseFloat(e.currentTarget.value) || 0,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
+
+                <Show when={graph().xTickMode === "Explicit"}>
+                  <div class="sub-panel">
+                    <label class="form-group">
+                      <span>目盛り値リスト (カンマ区切り)</span>
+                      <input
+                        type="text"
+                        class="input-text"
+                        value={graph().xExplicitTicks}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            xExplicitTicks: e.currentTarget.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
+              </div>
+
+              <div class="section-card">
+                <h3>Y 軸 (主軸)</h3>
+                <div class="grid-3">
+                  <label class="form-group">
+                    <span>タイトル</span>
+                    <input
+                      type="text"
+                      class="input-text"
+                      value={graph().yDesc}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yDesc: e.currentTarget.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>開始</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().yRangeStart}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yRangeStart: parseFloat(e.currentTarget.value) || 0,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>終了</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().yRangeEnd}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yRangeEnd: parseFloat(e.currentTarget.value) || 1,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div class="grid-3">
+                  <label class="form-group">
+                    <span>変換</span>
+                    <select
+                      class="input-select"
+                      value={graph().yTransform}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yTransform: e.currentTarget
+                            .value as AxisTransformType,
+                        }))
+                      }
+                    >
+                      <option value="Linear">Linear (線形)</option>
+                      <option value="Log10">Log10 (対数)</option>
+                      <option value="BiLinear">BiLinear</option>
+                    </select>
+                  </label>
+
+                  <label class="form-group">
+                    <span>目盛りモード</span>
+                    <select
+                      class="input-select"
+                      value={graph().yTickMode}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yTickMode: e.currentTarget.value as any,
+                        }))
+                      }
+                    >
+                      <option value="Interval">Interval (ステップ)</option>
+                      <option value="Auto">Auto (本数指定)</option>
+                      <option value="Explicit">Explicit (明示リスト)</option>
+                    </select>
+                  </label>
+
+                  <label class="form-group">
+                    <span>補助グリッド間隔</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().yMinorGridInterval}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yMinorGridInterval:
+                            parseFloat(e.currentTarget.value) || 0,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <Show when={graph().yTickMode === "Interval"}>
+                  <div class="grid-2 sub-panel">
+                    <label class="form-group">
+                      <span>間隔 (Base)</span>
+                      <input
+                        type="number"
+                        step="any"
+                        class="input-number"
+                        value={graph().yIntervalBase}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            yIntervalBase:
+                              parseFloat(e.currentTarget.value) || 1,
+                          }))
+                        }
+                      />
+                    </label>
+                    <label class="form-group">
+                      <span>オフセット (Offset)</span>
+                      <input
+                        type="number"
+                        step="any"
+                        class="input-number"
+                        value={graph().yIntervalOffset}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            yIntervalOffset:
+                              parseFloat(e.currentTarget.value) || 0,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
+              </div>
+
+              <div class="section-card">
+                <h3>Y2 軸 (第2Y軸・右軸)</h3>
+                <div class="grid-3">
+                  <label class="form-group">
+                    <span>タイトル</span>
+                    <input
+                      type="text"
+                      class="input-text"
+                      value={graph().y2Desc}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          y2Desc: e.currentTarget.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>開始</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().y2RangeStart}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          y2RangeStart: parseFloat(e.currentTarget.value) || 0,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>終了</span>
+                    <input
+                      type="number"
+                      step="any"
+                      class="input-number"
+                      value={graph().y2RangeEnd}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          y2RangeEnd: parseFloat(e.currentTarget.value) || 1,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+            </Show>
+
+            {/* 3. 余白 & レイアウトタブ */}
+            <Show when={activeTab() === "layout"}>
+              <div class="section-card">
+                <h3>キャンバス解像度 & 基本フォント</h3>
+                <div class="grid-3">
+                  <label class="form-group">
+                    <span>画像幅 (px)</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().canvasWidth}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          canvasWidth: parseInt(e.currentTarget.value) || 1600,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>画像高さ (px)</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().canvasHeight}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          canvasHeight: parseInt(e.currentTarget.value) || 1200,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>フォントサイズ</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().baseFontSize}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          baseFontSize: parseInt(e.currentTarget.value) || 36,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div class="section-card">
+                <h3>余白・間隔の調整</h3>
+                <div class="grid-4">
+                  <label class="form-group">
+                    <span>外周余白 (margin)</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().margin}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          margin: parseInt(e.currentTarget.value) || 60,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>X軸エリア幅</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().xLabelArea}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          xLabelArea: parseInt(e.currentTarget.value) || 160,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>Y軸エリア幅</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().yLabelArea}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          yLabelArea: parseInt(e.currentTarget.value) || 180,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>右余白 (right_margin)</span>
+                    <input
+                      type="number"
+                      class="input-number"
+                      value={graph().rightMargin}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          rightMargin: parseInt(e.currentTarget.value) || 140,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div class="section-card">
+                <h3>凡例 & スタイル設定</h3>
+                <div class="grid-3">
+                  <label
+                    class="checkbox-label"
+                    style={{ "margin-top": "24px" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={graph().showLegend}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          showLegend: e.currentTarget.checked,
+                        }))
+                      }
+                    />
+                    凡例を表示する
+                  </label>
+
+                  <label class="form-group">
+                    <span>凡例位置</span>
+                    <select
+                      class="input-select"
+                      value={graph().legendPosition}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          legendPosition: e.currentTarget
+                            .value as LegendPosition,
+                        }))
+                      }
+                    >
+                      <option value="UpperRight">右上 (UpperRight)</option>
+                      <option value="UpperLeft">左上 (UpperLeft)</option>
+                      <option value="LowerRight">右下 (LowerRight)</option>
+                      <option value="LowerLeft">左下 (LowerLeft)</option>
+                      <option value="MiddleLeft">中左 (MiddleLeft)</option>
+                      <option value="MiddleRight">中右 (MiddleRight)</option>
+                    </select>
+                  </label>
+
+                  <label
+                    class="checkbox-label"
+                    style={{ "margin-top": "24px" }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={graph().useCrossAxes}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          useCrossAxes: e.currentTarget.checked,
+                        }))
+                      }
+                    />
+                    十字軸モード
+                  </label>
+                </div>
+
+                <div class="grid-2" style={{ "margin-top": "12px" }}>
+                  <label class="form-group">
+                    <span>枠線の太さ (px)</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      class="input-number"
+                      value={graph().axisWidth}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          axisWidth: parseFloat(e.currentTarget.value) || 3,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label class="form-group">
+                    <span>補助線の太さ (px)</span>
+                    <input
+                      type="number"
+                      step="0.5"
+                      class="input-number"
+                      value={graph().minorGridWidth}
+                      onInput={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          minorGridWidth:
+                            parseFloat(e.currentTarget.value) || 1,
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+            </Show>
+
+            {/* 4. バッチ設定タブ */}
+            <Show when={activeTab() === "batch"}>
+              <div class="section-card">
+                <h3>バッチ設定 JSON 実行</h3>
+                <p class="desc-text">
+                  複数の CSV/TSV を一度に処理する <code>BatchConfig</code>{" "}
+                  を直接入力して実行できます。
+                </p>
+                <textarea
+                  class="data-textarea batch-area"
+                  placeholder='{\n  "default_width": 1600,\n  "tasks": [\n    { "input": "data.tsv", "output": "out.png" }\n  ]\n}'
+                  value={batchJsonText()}
+                  onInput={(e) => setBatchJsonText(e.currentTarget.value)}
+                />
+                <button class="btn btn-primary" onClick={handleRunBatch}>
+                  バッチ一括実行
+                </button>
+              </div>
+            </Show>
           </div>
-        </div>
-      </section>
-    </main>
+        </section>
+
+        {/* 右カラム: プレビュー画面 */}
+        <section class="preview-panel">
+          <div class="preview-box">
+            <Show
+              when={previewSrc()}
+              fallback={
+                <div class="preview-placeholder">
+                  描画結果がここに表示されます
+                </div>
+              }
+            >
+              <img src={previewSrc()} alt="Graph Preview" class="preview-img" />
+            </Show>
+          </div>
+
+          <div class="preview-footer">
+            <div class="meta-badge">
+              {graph().canvasWidth} × {graph().canvasHeight} px
+            </div>
+            <div class="meta-badge">
+              系列: {seriesList().length} 個 (
+              {seriesList().reduce((acc, s) => acc + s.points.length, 0)} 点)
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
   );
 }
-
-export default App;
