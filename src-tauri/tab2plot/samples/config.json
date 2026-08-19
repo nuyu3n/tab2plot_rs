@@ -1,0 +1,51 @@
+{
+  "x_label_area": 160,
+  "y_label_area": 200,
+  "margin": 60,
+
+  "base_font_size": 50,
+  "x_desc": "Time [s]",
+  "y_desc": "Wave [V]",
+  "x_range": { "start": 0.0, "end": 6.0 },
+  "y_range": { "start": -1.2, "end": 1.2 },
+  "x_labels": 7,
+  "y_labels": 5,
+  "x_ticks_mode": {
+    "Interval": { "base": 1.0, "offset": 0.0 }
+  },
+  "y_ticks_mode": {
+    "Interval": { "base": 0.5, "offset": 0.0 }
+  },
+  "x_tick_length": 8,
+  "y_tick_length": 8,
+  "font_name": "",
+  "x_format_fixed": 1,
+  "y_format_fixed": 1,
+  "show_legend": true,
+  "legend_position": "UpperRight",
+  "x_transform": "Linear",
+  "y_transform": "Linear",
+  "x_minor_grid_interval": 0.5,
+  "y_minor_grid_interval": 0.25,
+  "use_cross_axes": false,
+  "axis_width": 3.0,
+  "minor_grid_width": 1.0,
+  "series_styles": [
+    {
+      "label": "sin(t) Measured",
+      "color": [0, 102, 204],
+      "marker_type": "CircleFilled",
+      "marker_size": 8,
+      "line_style": "Solid",
+      "line_width": 2
+    },
+    {
+      "label": "cos(t) Theoretical",
+      "color": [204, 51, 0],
+      "marker_type": "None",
+      "marker_size": 0,
+      "line_style": "Dashed",
+      "line_width": 2
+    }
+  ]
+}

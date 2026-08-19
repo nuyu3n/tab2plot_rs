@@ -1,0 +1,75 @@
+{
+  "default_width": 1600,
+  "default_height": 1200,
+  "common": {
+    "base_font_size": 36,
+    "axis_width": 3.0,
+    "minor_grid_width": 1.0,
+    "x_label_area": 160,
+    "y_label_area": 180,
+    "margin": 60,
+    "show_legend": true,
+    "legend_position": "UpperRight"
+  },
+  "tasks": [
+    {
+      "input": "samples/wave.tsv",
+      "output": "dist/wave_output.png",
+      "config": {
+        "x_desc": "時間 [s]",
+        "y_desc": "電圧 [V]",
+        "x_minor_grid_interval": 0.5,
+        "y_minor_grid_interval": 0.25,
+        "series_styles": [
+          {
+            "label": "CH1 (sin)",
+            "color": [0, 102, 204],
+            "marker_type": "CircleFilled",
+            "marker_size": 4,
+            "line_style": "Solid",
+            "line_width": 2
+          },
+          {
+            "label": "CH2 (cos)",
+            "color": [204, 51, 0],
+            "marker_type": "None",
+            "line_style": "Dashed",
+            "line_width": 2
+          }
+        ]
+      }
+    },
+    {
+      "input": "samples/bode.tsv",
+      "output": "dist/bode_output.png",
+      "config": {
+        "x_desc": "周波数 [Hz]",
+        "y_desc": "利得 [dB]",
+        "x_transform": "Log10",
+        "x_range": { "start": 10.0, "end": 100000.0 },
+        "y_range": { "start": -45.0, "end": 5.0 },
+        "x_ticks_mode": {
+          "Explicit": [10.0, 100.0, 1000.0, 10000.0, 100000.0]
+        },
+        "y_ticks_mode": { "Interval": { "base": 10.0, "offset": 0.0 } },
+        "series_styles": [
+          {
+            "label": "実測値",
+            "color": [0, 153, 76],
+            "marker_type": "Cross",
+            "marker_size": 5,
+            "line_style": "Solid",
+            "line_width": 2
+          },
+          {
+            "label": "理論特性",
+            "color": [230, 159, 0],
+            "marker_type": "None",
+            "line_style": "Dashed",
+            "line_width": 2
+          }
+        ]
+      }
+    }
+  ]
+}
