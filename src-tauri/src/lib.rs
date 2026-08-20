@@ -7,7 +7,7 @@ use std::path::Path;
 use tab2plot::wrap::{
     detect_delimiter, encode_rgb_to_png, execute_batch_from_str, parse_table_str,
 };
-use tab2plot::{generate_graph_image, GraphConfig, SeriesData};
+use tab2plot::{generate_graph_image, generate_graph_svg, GraphConfig, SeriesData};
 
 #[derive(Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +105,26 @@ fn save_graph_png(
 
 #[tauri::command]
 #[allow(non_snake_case)]
+fn save_graph_svg(
+    config: GraphConfig,
+    seriesList: Vec<SeriesData>,
+    width: u32,
+    height: u32,
+    filePath: String,
+) -> Result<(), String> {
+    let svg_str =
+        generate_graph_svg(width, height, &config, &seriesList).map_err(|e| e.to_string())?;
+    let out_path = Path::new(&filePath);
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+    }
+    std::fs::write(out_path, svg_str).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
 fn run_batch_json(batchJson: String, baseDir: Option<String>) -> Result<(), String> {
     let base_path = baseDir.as_deref().map(Path::new);
     execute_batch_from_str(&batchJson, base_path, None, None).map_err(|e| e.to_string())
@@ -119,6 +139,7 @@ pub fn run() {
             parse_table_data,
             render_graph_base64,
             save_graph_png,
+            save_graph_svg,
             run_batch_json,
         ])
         .run(tauri::generate_context!())

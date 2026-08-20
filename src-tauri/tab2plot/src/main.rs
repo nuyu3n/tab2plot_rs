@@ -32,6 +32,10 @@ struct Cli {
     /// 出力画像の高さ (px)
     #[arg(long, default_value_t = 1440)]
     height: u32,
+
+    /// SVG形式で出力（未指定時はPNG）
+    #[arg(long)]
+    svg: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -55,6 +59,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    let default_ext = if cli.svg { "svg" } else { "png" };
+
     // 2. 単一ファイル処理
     if cli.input.len() == 1 {
         let in_path = &cli.input[0];
@@ -62,12 +68,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Some(ref out) => {
                 if out.is_dir() || out.extension().is_none() {
                     let file_stem = in_path.file_stem().unwrap_or_default();
-                    out.join(format!("{}.png", file_stem.to_string_lossy()))
+                    out.join(format!("{}.{}", file_stem.to_string_lossy(), default_ext))
                 } else {
                     out.clone()
                 }
             }
-            None => in_path.with_extension("png"),
+            None => in_path.with_extension(default_ext),
         };
 
         render_from_files(
@@ -84,11 +90,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 3. 複数ファイル一括処理
     let out_dir = match cli.output {
         Some(ref out) => {
-            if out
-                .extension()
-                .map_or(false, |ext| ext.eq_ignore_ascii_case("png"))
-            {
-                return Err("複数ファイル入力時、--output (-o) に単一画像ファイル名は指定できません。出力先ディレクトリを指定してください。".into());
+            if let Some(ext) = out.extension() {
+                if ext.eq_ignore_ascii_case("png") || ext.eq_ignore_ascii_case("svg") {
+                    return Err("複数ファイル入力時、--output (-o) に単一画像ファイル名は指定できません。出力先ディレクトリを指定してください。".into());
+                }
             }
             out.clone()
         }
@@ -97,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for (i, in_path) in cli.input.iter().enumerate() {
         let file_stem = in_path.file_stem().unwrap_or_default();
-        let out_path = out_dir.join(format!("{}.png", file_stem.to_string_lossy()));
+        let out_path = out_dir.join(format!("{}.{}", file_stem.to_string_lossy(), default_ext));
 
         render_from_files(
             in_path,

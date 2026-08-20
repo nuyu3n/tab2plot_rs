@@ -1,4 +1,7 @@
-use crate::{GraphConfig, GraphError, LineStyleType, MarkerType, SeriesData, generate_graph_image};
+use crate::{
+    GraphConfig, GraphError, LineStyleType, MarkerType, SeriesData, generate_graph_image,
+    generate_graph_svg,
+};
 use plotters::prelude::RGBColor;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,7 +13,7 @@ pub fn default_config() -> GraphConfig {
     GraphConfig::default()
 }
 
-/// 区切り文字の自動判定ヘルパー（TSV, CSV, 空白区切り対応）
+/// 区切り文字の自動判定ヘルパー
 pub fn detect_delimiter(table_text: &str) -> u8 {
     let first_line = table_text
         .lines()
@@ -201,19 +204,12 @@ pub fn parse_table_str(
     Ok(series_list)
 }
 
-pub fn render_to_png_bytes(
+/// 設定パースと Auto Range の共通計算ヘルパー
+fn prepare_config_and_series(
     table_text: &str,
     config_json: Option<&str>,
-    width: u32,
-    height: u32,
     delimiter: Option<u8>,
-) -> Result<Vec<u8>, GraphError> {
-    if width == 0 || height == 0 {
-        return Err(GraphError::InvalidData(
-            "幅および高さは1px以上である必要があります".to_string(),
-        ));
-    }
-
+) -> Result<(GraphConfig, Vec<SeriesData>), GraphError> {
     let parsed_json_val: Option<Value> = match config_json {
         Some(json) => Some(
             serde_json::from_str(json)
@@ -313,13 +309,50 @@ pub fn render_to_png_bytes(
         }
     }
 
+    Ok((config, series_list))
+}
+
+/// PNGバイト列の生成
+pub fn render_to_png_bytes(
+    table_text: &str,
+    config_json: Option<&str>,
+    width: u32,
+    height: u32,
+    delimiter: Option<u8>,
+) -> Result<Vec<u8>, GraphError> {
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "幅および高さは1px以上である必要があります".to_string(),
+        ));
+    }
+
+    let (config, series_list) = prepare_config_and_series(table_text, config_json, delimiter)?;
     let raw_rgb = generate_graph_image(width, height, &config, &series_list)?;
     encode_rgb_to_png(width, height, &raw_rgb)
 }
 
+/// SVG文字列の生成
+pub fn render_to_svg_str(
+    table_text: &str,
+    config_json: Option<&str>,
+    width: u32,
+    height: u32,
+    delimiter: Option<u8>,
+) -> Result<String, GraphError> {
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "幅および高さは1px以上である必要があります".to_string(),
+        ));
+    }
+
+    let (config, series_list) = prepare_config_and_series(table_text, config_json, delimiter)?;
+    generate_graph_svg(width, height, &config, &series_list)
+}
+
+/// ファイルから読み込み、PNG または SVG に書き出す（拡張子自動判別）
 pub fn render_from_files(
     data_path: impl AsRef<Path>,
-    output_png_path: impl AsRef<Path>,
+    output_path: impl AsRef<Path>,
     config_path: Option<impl AsRef<Path>>,
     width: u32,
     height: u32,
@@ -347,22 +380,38 @@ pub fn render_from_files(
         None
     };
 
-    let png_bytes = render_to_png_bytes(&data_str, config_json.as_deref(), width, height, None)?;
+    let is_svg = output_path
+        .as_ref()
+        .extension()
+        .map_or(false, |ext| ext.eq_ignore_ascii_case("svg"));
 
-    if let Some(parent) = output_png_path.as_ref().parent() {
+    if let Some(parent) = output_path.as_ref().parent() {
         if !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| GraphError::Drawing(format!("出力ディレクトリ作成失敗: {}", e)))?;
         }
     }
 
-    std::fs::write(&output_png_path, png_bytes).map_err(|e| {
-        GraphError::Drawing(format!(
-            "画像保存エラー ({:?}): {}",
-            output_png_path.as_ref(),
-            e
-        ))
-    })?;
+    if is_svg {
+        let svg_str = render_to_svg_str(&data_str, config_json.as_deref(), width, height, None)?;
+        std::fs::write(&output_path, svg_str).map_err(|e| {
+            GraphError::Drawing(format!(
+                "SVG画像保存エラー ({:?}): {}",
+                output_path.as_ref(),
+                e
+            ))
+        })?;
+    } else {
+        let png_bytes =
+            render_to_png_bytes(&data_str, config_json.as_deref(), width, height, None)?;
+        std::fs::write(&output_path, png_bytes).map_err(|e| {
+            GraphError::Drawing(format!(
+                "画像保存エラー ({:?}): {}",
+                output_path.as_ref(),
+                e
+            ))
+        })?;
+    }
 
     Ok(())
 }
@@ -410,7 +459,7 @@ pub fn merge_json(target: &mut Value, source: &Value) {
     }
 }
 
-/// 解析済み BatchConfig 構造体からのバッチ実行
+/// 解析済み BatchConfig 構造体からのバッチ実行（PNG / SVG 自動判別対応）
 pub fn execute_batch_config(
     batch: &BatchConfig,
     base_dir: Option<&Path>,
@@ -487,8 +536,9 @@ pub fn execute_batch_config(
                 GraphError::InvalidData(format!("入力ファイル読込失敗 ({:?}): {}", input_path, e))
             })?;
 
-        let png_bytes =
-            render_to_png_bytes(&data_str, config_json_str.as_deref(), width, height, None)?;
+        let is_svg = output_path
+            .extension()
+            .map_or(false, |ext| ext.eq_ignore_ascii_case("svg"));
 
         if let Some(parent) = output_path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -497,8 +547,19 @@ pub fn execute_batch_config(
             }
         }
 
-        std::fs::write(&output_path, png_bytes)
-            .map_err(|e| GraphError::Drawing(format!("画像保存失敗 ({:?}): {}", output_path, e)))?;
+        if is_svg {
+            let svg_str =
+                render_to_svg_str(&data_str, config_json_str.as_deref(), width, height, None)?;
+            std::fs::write(&output_path, svg_str).map_err(|e| {
+                GraphError::Drawing(format!("SVG画像保存失敗 ({:?}): {}", output_path, e))
+            })?;
+        } else {
+            let png_bytes =
+                render_to_png_bytes(&data_str, config_json_str.as_deref(), width, height, None)?;
+            std::fs::write(&output_path, png_bytes).map_err(|e| {
+                GraphError::Drawing(format!("画像保存失敗 ({:?}): {}", output_path, e))
+            })?;
+        }
 
         println!(
             "[Batch {}/{}] Saved: {:?}",
@@ -511,7 +572,7 @@ pub fn execute_batch_config(
     Ok(())
 }
 
-/// JSON文字列からのバッチ実行（Tauri向け）
+/// JSON文字列からのバッチ実行
 pub fn execute_batch_from_str(
     batch_json_str: &str,
     base_dir: Option<&Path>,
@@ -523,7 +584,7 @@ pub fn execute_batch_from_str(
     execute_batch_config(&batch, base_dir, cli_width_override, cli_height_override)
 }
 
-/// ファイルパスからのバッチ実行（CLI向け）
+/// ファイルパスからのバッチ実行
 pub fn execute_batch(
     batch_config_path: impl AsRef<Path>,
     cli_width_override: Option<u32>,

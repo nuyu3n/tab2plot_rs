@@ -1,4 +1,12 @@
-import { createEffect, createSignal, For, Show, onMount } from "solid-js";
+import {
+  createEffect,
+  createSignal,
+  For,
+  Index,
+  Show,
+  onMount,
+  onCleanup,
+} from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
@@ -17,6 +25,8 @@ import {
   ChevronDown,
   ChevronRight,
   Eye,
+  Check,
+  FileCode,
 } from "lucide-solid";
 import "./App.css";
 
@@ -58,9 +68,15 @@ interface AppGraphState {
   legendPosition: LegendPosition;
   legendBorderWidth: number;
   legendBackgroundOpacity: number;
+  legendMargin: number;
+  legendAreaSize: number;
+
   useCrossAxes: boolean;
+  showCrossBorder: boolean;
   axisWidth: number;
   tickWidth: number;
+  xTickLength: number;
+  yTickLength: number;
   minorGridWidth: number;
   gridOpacity: number;
 
@@ -72,7 +88,6 @@ interface AppGraphState {
   xIntervalBase: number;
   xIntervalOffset: number;
   xExplicitTicks: string;
-  xTickLength: number;
   xFormatFixed: number;
   xTransform: AxisTransformType;
   xBiPos: number;
@@ -87,7 +102,6 @@ interface AppGraphState {
   yIntervalBase: number;
   yIntervalOffset: number;
   yExplicitTicks: string;
-  yTickLength: number;
   yFormatFixed: number;
   yTransform: AxisTransformType;
   yBiPos: number;
@@ -109,7 +123,6 @@ interface AppGraphState {
   y2MinorGridInterval: number;
 }
 
-// GUI バッチタスク詳細定義
 interface BatchTaskItem {
   id: string;
   expanded: boolean;
@@ -119,8 +132,6 @@ interface BatchTaskItem {
   overrideSize: boolean;
   width: number;
   height: number;
-
-  // カスタム上書き設定
   overrideSettings: boolean;
   xDesc: string;
   xTransform: AxisTransformType;
@@ -129,7 +140,6 @@ interface BatchTaskItem {
   xTickMode: "Auto" | "Interval" | "Explicit";
   xIntervalBase: number;
   xMinorGridInterval: number;
-
   yDesc: string;
   yTransform: AxisTransformType;
   yRangeStart: number;
@@ -137,7 +147,6 @@ interface BatchTaskItem {
   yTickMode: "Auto" | "Interval" | "Explicit";
   yIntervalBase: number;
   yMinorGridInterval: number;
-
   hasSecondary: boolean;
   y2Desc: string;
   y2Transform: AxisTransformType;
@@ -146,19 +155,29 @@ interface BatchTaskItem {
   y2TickMode: "Auto" | "Interval" | "Explicit";
   y2IntervalBase: number;
   y2MinorGridInterval: number;
-
   showLegend: boolean;
   legendPosition: LegendPosition;
   useCrossAxes: boolean;
+  showCrossBorder: boolean;
 }
 
-const defaultColors = [
+const PRESET_COLORS: string[] = [
   "#0066cc",
   "#cc3300",
   "#00994c",
   "#e69f00",
   "#9400d3",
   "#d94389",
+  "#17becf",
+  "#8c564b",
+  "#2ca02c",
+  "#d62728",
+  "#1f77b4",
+  "#ff7f0e",
+  "#000000",
+  "#555555",
+  "#888888",
+  "#0284c7",
 ];
 
 const initialTableText = `time\tch1 (sin)\tch2 (cos)
@@ -189,9 +208,15 @@ const defaultGraphState: AppGraphState = {
   legendPosition: "UpperRight",
   legendBorderWidth: 3,
   legendBackgroundOpacity: 0.8,
+  legendMargin: 20,
+  legendAreaSize: 50,
+
   useCrossAxes: false,
+  showCrossBorder: false,
   axisWidth: 3,
   tickWidth: 3,
+  xTickLength: 10,
+  yTickLength: 10,
   minorGridWidth: 1,
   gridOpacity: 0.3,
 
@@ -203,7 +228,6 @@ const defaultGraphState: AppGraphState = {
   xIntervalBase: 1,
   xIntervalOffset: 0,
   xExplicitTicks: "0, 1, 2, 3, 4, 5, 6",
-  xTickLength: 10,
   xFormatFixed: 1,
   xTransform: "Linear",
   xBiPos: 1,
@@ -218,7 +242,6 @@ const defaultGraphState: AppGraphState = {
   yIntervalBase: 0.5,
   yIntervalOffset: 0,
   yExplicitTicks: "-1, -0.5, 0, 0.5, 1",
-  yTickLength: 10,
   yFormatFixed: 1,
   yTransform: "Linear",
   yBiPos: 1,
@@ -250,9 +273,9 @@ function hexToRgb(hex: string): [number, number, number] {
           .join("")
       : clean.padEnd(6, "0").slice(0, 6);
   return [
-    parseInt(normalized.slice(0, 2), 16),
-    parseInt(normalized.slice(2, 4), 16),
-    parseInt(normalized.slice(4, 6), 16),
+    parseInt(normalized.slice(0, 2), 16) || 0,
+    parseInt(normalized.slice(2, 4), 16) || 0,
+    parseInt(normalized.slice(4, 6), 16) || 0,
   ];
 }
 
@@ -273,6 +296,130 @@ function parseNumberList(val: string): number[] {
     .filter((n) => Number.isFinite(n));
 }
 
+function NumberInput(props: {
+  value: number;
+  onValueChange: (val: number) => void;
+  class?: string;
+  placeholder?: string;
+}) {
+  const [text, setText] = createSignal(String(props.value ?? 0));
+
+  createEffect(() => {
+    setText(String(props.value ?? 0));
+  });
+
+  const handleInput = (e: InputEvent & { currentTarget: HTMLInputElement }) => {
+    const raw = e.currentTarget.value;
+    setText(raw);
+    if (raw === "" || raw === "-" || raw === "." || raw === "-.") return;
+    const num = parseFloat(raw);
+    if (!isNaN(num)) {
+      props.onValueChange(num);
+    }
+  };
+
+  const handleBlur = () => {
+    const num = parseFloat(text());
+    if (isNaN(num)) {
+      setText(String(props.value));
+    } else {
+      props.onValueChange(num);
+      setText(String(num));
+    }
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="decimal"
+      class={
+        props.class ||
+        "bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white focus:border-blue-500"
+      }
+      value={text()}
+      onInput={handleInput}
+      onBlur={handleBlur}
+      placeholder={props.placeholder}
+    />
+  );
+}
+
+function ColorPicker(props: {
+  color: string;
+  onChange: (color: string) => void;
+}) {
+  const [isOpen, setIsOpen] = createSignal(false);
+  let containerRef: HTMLDivElement | undefined;
+
+  const handleClickOutside = (e: MouseEvent) => {
+    if (containerRef && !containerRef.contains(e.target as Node)) {
+      setIsOpen(false);
+    }
+  };
+
+  onMount(() => document.addEventListener("mousedown", handleClickOutside));
+  onCleanup(() =>
+    document.removeEventListener("mousedown", handleClickOutside),
+  );
+
+  return (
+    <div class="relative shrink-0" ref={containerRef}>
+      <button
+        type="button"
+        class="w-7 h-7 rounded border border-slate-300 p-0.5 bg-white shadow-sm flex items-center justify-center hover:scale-105 transition"
+        onClick={() => setIsOpen(!isOpen())}
+      >
+        <span
+          class="w-full h-full rounded-sm"
+          style={{ "background-color": props.color }}
+        />
+      </button>
+
+      <Show when={isOpen()}>
+        <div class="absolute left-0 top-9 z-50 bg-white border border-slate-200 rounded-lg p-3 shadow-xl w-48 space-y-2.5">
+          <div class="text-[11px] font-bold text-slate-600">
+            プリセットカラー
+          </div>
+          <div class="grid grid-cols-4 gap-1.5">
+            <For each={PRESET_COLORS}>
+              {(c: string) => (
+                <button
+                  type="button"
+                  class="w-8 h-8 rounded border border-slate-200 flex items-center justify-center hover:scale-110 transition"
+                  style={{ "background-color": c }}
+                  onClick={() => {
+                    props.onChange(c);
+                    setIsOpen(false);
+                  }}
+                >
+                  <Show when={props.color.toLowerCase() === c.toLowerCase()}>
+                    <Check class="w-4 h-4 text-white drop-shadow" />
+                  </Show>
+                </button>
+              )}
+            </For>
+          </div>
+
+          <div class="pt-2 border-t border-slate-100 flex items-center gap-2">
+            <input
+              type="color"
+              class="w-6 h-6 border-0 bg-transparent cursor-pointer p-0"
+              value={props.color}
+              onInput={(e) => props.onChange(e.currentTarget.value)}
+            />
+            <input
+              type="text"
+              class="flex-1 bg-slate-50 border border-slate-300 rounded px-1.5 py-0.5 text-xs font-mono uppercase outline-none"
+              value={props.color}
+              onInput={(e) => props.onChange(e.currentTarget.value)}
+            />
+          </div>
+        </div>
+      </Show>
+    </div>
+  );
+}
+
 export default function App() {
   const [graph, setGraph] = createSignal<AppGraphState>({
     ...defaultGraphState,
@@ -287,7 +434,6 @@ export default function App() {
   const [isRendering, setIsRendering] = createSignal(false);
   const [autoSaveEnabled, setAutoSaveEnabled] = createSignal(true);
 
-  // GUI バッチタスクリスト
   const [batchTasks, setBatchTasks] = createSignal<BatchTaskItem[]>([
     {
       id: "1",
@@ -324,46 +470,10 @@ export default function App() {
       showLegend: true,
       legendPosition: "UpperRight",
       useCrossAxes: false,
-    },
-    {
-      id: "2",
-      expanded: false,
-      input: "samples/bode.tsv",
-      output: "dist/bode.png",
-      configPath: "",
-      overrideSize: false,
-      width: 1920,
-      height: 1440,
-      overrideSettings: true,
-      xDesc: "周波数 [Hz]",
-      xTransform: "Log10",
-      xRangeStart: 10,
-      xRangeEnd: 100000,
-      xTickMode: "Explicit",
-      xIntervalBase: 10,
-      xMinorGridInterval: 0,
-      yDesc: "利得 [dB]",
-      yTransform: "Linear",
-      yRangeStart: -45,
-      yRangeEnd: 5,
-      yTickMode: "Interval",
-      yIntervalBase: 10,
-      yMinorGridInterval: 0,
-      hasSecondary: false,
-      y2Desc: "",
-      y2Transform: "Linear",
-      y2RangeStart: 0,
-      y2RangeEnd: 1,
-      y2TickMode: "Auto",
-      y2IntervalBase: 1,
-      y2MinorGridInterval: 0,
-      showLegend: true,
-      legendPosition: "UpperRight",
-      useCrossAxes: false,
+      showCrossBorder: false,
     },
   ]);
 
-  // 初期化（ストレージから復元）
   onMount(() => {
     const savedGraph = localStorage.getItem("tab2plot_graph_state");
     const savedSeries = localStorage.getItem("tab2plot_series_list");
@@ -395,7 +505,6 @@ export default function App() {
     }
   });
 
-  // LocalStorage 自動保存
   createEffect(() => {
     if (!autoSaveEnabled()) return;
     localStorage.setItem("tab2plot_graph_state", JSON.stringify(graph()));
@@ -404,7 +513,6 @@ export default function App() {
     localStorage.setItem("tab2plot_batch_tasks", JSON.stringify(batchTasks()));
   });
 
-  // 新規作成（初期化）
   const handleResetNew = () => {
     if (!confirm("現在の設定とデータを初期化して新規作成しますか？")) return;
     setGraph({ ...defaultGraphState });
@@ -413,7 +521,6 @@ export default function App() {
     setStatusMessage("新規作成しました");
   };
 
-  // テキストエリアでの Tab キー入力処理（インデント挿入）
   const handleTextareaKeyDown = (
     e: KeyboardEvent & { currentTarget: HTMLTextAreaElement },
   ) => {
@@ -433,7 +540,6 @@ export default function App() {
     }
   };
 
-  // Backend 用 payload 生成
   const buildPayloadConfig = () => {
     const g = graph();
     const buildTicks = (
@@ -506,6 +612,8 @@ export default function App() {
       legend_position: g.legendPosition,
       legend_border_width: g.legendBorderWidth,
       legend_background_opacity: g.legendBackgroundOpacity,
+      legend_margin: g.legendMargin,
+      legend_area_size: g.legendAreaSize,
       x_transform: buildTransform(g.xTransform, g.xBiPos, g.xBiNeg),
       y_transform: buildTransform(g.yTransform, g.yBiPos, g.yBiNeg),
       y2_transform: buildTransform(g.y2Transform, g.y2BiPos, g.y2BiNeg),
@@ -516,6 +624,7 @@ export default function App() {
       y2_minor_grid_interval:
         g.y2MinorGridInterval > 0 ? g.y2MinorGridInterval : null,
       use_cross_axes: g.useCrossAxes,
+      show_cross_border: g.showCrossBorder,
       axis_width: g.axisWidth,
       minor_grid_width: g.minorGridWidth,
       grid_opacity: g.gridOpacity,
@@ -544,7 +653,6 @@ export default function App() {
     }));
   };
 
-  // プレビュー描画処理
   async function triggerPreview() {
     if (seriesList().length === 0) return;
     setIsRendering(true);
@@ -565,7 +673,6 @@ export default function App() {
     }
   }
 
-  // 自動再描画 (debounce)
   let timer: number | undefined;
   createEffect(() => {
     graph();
@@ -576,7 +683,6 @@ export default function App() {
     }, 250);
   });
 
-  // TSV/CSV テキストのパース（系列の自動同期）
   async function handleParseRawText() {
     if (!rawText().trim()) return;
     try {
@@ -601,20 +707,19 @@ export default function App() {
             ? existing.color
             : p.color
               ? rgbToHex(p.color)
-              : defaultColors[idx % defaultColors.length],
+              : PRESET_COLORS[idx % PRESET_COLORS.length],
           useSecondary: existing ? existing.useSecondary : p.use_secondary,
         };
       });
 
       setSeriesList(nextList);
       autoScaleRange(nextList);
-      setStatusMessage(`${nextList.length} 系列をデータから読み込みました`);
+      setStatusMessage(`${nextList.length} 系列を読み込みました`);
     } catch (err) {
       setStatusMessage(`パースエラー: ${err}`);
     }
   }
 
-  // ファイル読込
   async function handleImportFile() {
     const selected = await open({
       filters: [{ name: "Data File", extensions: ["tsv", "csv", "txt"] }],
@@ -635,7 +740,6 @@ export default function App() {
     }
   }
 
-  // 自動範囲調整
   function autoScaleRange(targetSeries = seriesList()) {
     let minX = Infinity;
     let maxX = -Infinity;
@@ -663,7 +767,6 @@ export default function App() {
     }
   }
 
-  // 単一 PNG 保存
   async function handleSaveSinglePng() {
     const selected = await save({
       filters: [{ name: "PNG Image", extensions: ["png"] }],
@@ -680,13 +783,34 @@ export default function App() {
         height: g.canvasHeight,
         filePath: selected,
       });
-      setStatusMessage(`保存成功: ${selected}`);
+      setStatusMessage(`PNG 保存成功: ${selected}`);
     } catch (err) {
       setStatusMessage(`保存失敗: ${err}`);
     }
   }
 
-  // GUI バッチタスク追加
+  async function handleSaveSingleSvg() {
+    const selected = await save({
+      filters: [{ name: "SVG Vector Image", extensions: ["svg"] }],
+      defaultPath: "graph.svg",
+    });
+    if (!selected) return;
+
+    try {
+      const g = graph();
+      await invoke("save_graph_svg", {
+        config: buildPayloadConfig(),
+        seriesList: buildPayloadSeries(),
+        width: g.canvasWidth,
+        height: g.canvasHeight,
+        filePath: selected,
+      });
+      setStatusMessage(`SVG 保存成功: ${selected}`);
+    } catch (err) {
+      setStatusMessage(`保存失敗: ${err}`);
+    }
+  }
+
   const addBatchTask = () => {
     setBatchTasks((tasks) => [
       ...tasks,
@@ -725,11 +849,11 @@ export default function App() {
         showLegend: graph().showLegend,
         legendPosition: graph().legendPosition,
         useCrossAxes: graph().useCrossAxes,
+        showCrossBorder: graph().showCrossBorder,
       },
     ]);
   };
 
-  // GUI バッチ実行
   async function handleRunGuiBatch() {
     const tasks = batchTasks();
     if (tasks.length === 0) {
@@ -772,6 +896,7 @@ export default function App() {
             show_legend: t.showLegend,
             legend_position: t.legendPosition,
             use_cross_axes: t.useCrossAxes,
+            show_cross_border: t.showCrossBorder,
           };
           if (t.hasSecondary) {
             taskConfig.y2_desc = t.y2Desc;
@@ -851,6 +976,14 @@ export default function App() {
               class={`w-3.5 h-3.5 ${isRendering() ? "animate-spin" : ""}`}
             />
             再描画
+          </button>
+          <button
+            class="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm transition"
+            onClick={handleSaveSingleSvg}
+            title="ベクター画像形式で保存"
+          >
+            <FileCode class="w-3.5 h-3.5" />
+            SVG 保存
           </button>
           <button
             class="flex items-center gap-1.5 px-3.5 py-1.5 rounded-md text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white shadow-sm transition"
@@ -966,31 +1099,24 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 系列スタイル一覧（データから自動生成） */}
+              {/* 系列スタイル一覧 */}
               <div class="space-y-3">
                 <div class="flex justify-between items-center px-1">
                   <h3 class="text-xs font-bold text-slate-800">
-                    系列スタイル設定 ({seriesList().length} 系列検出)
+                    系列スタイル設定 ({seriesList().length} 系列)
                   </h3>
-                  <span class="text-[11px] text-slate-500">
-                    表データの列から自動生成
-                  </span>
                 </div>
 
-                <For each={seriesList()}>
-                  {(s, idx) => (
+                <Index each={seriesList()}>
+                  {(item, idx) => (
                     <div class="bg-white border border-slate-200 rounded-lg p-3 shadow-sm space-y-2.5">
                       <div class="flex items-center gap-2">
-                        <input
-                          type="color"
-                          class="w-7 h-7 rounded border border-slate-300 cursor-pointer p-0.5 bg-white shrink-0"
-                          value={s.color}
-                          onInput={(e) =>
+                        <ColorPicker
+                          color={item().color}
+                          onChange={(newColor) =>
                             setSeriesList((list) =>
-                              list.map((item, i) =>
-                                i === idx()
-                                  ? { ...item, color: e.currentTarget.value }
-                                  : item,
+                              list.map((s, i) =>
+                                i === idx ? { ...s, color: newColor } : s,
                               ),
                             )
                           }
@@ -998,13 +1124,13 @@ export default function App() {
                         <input
                           type="text"
                           class="flex-1 bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs font-semibold text-slate-900 outline-none focus:bg-white focus:border-blue-500"
-                          value={s.label}
+                          value={item().label}
                           onInput={(e) =>
                             setSeriesList((list) =>
-                              list.map((item, i) =>
-                                i === idx()
-                                  ? { ...item, label: e.currentTarget.value }
-                                  : item,
+                              list.map((s, i) =>
+                                i === idx
+                                  ? { ...s, label: e.currentTarget.value }
+                                  : s,
                               ),
                             )
                           }
@@ -1013,16 +1139,16 @@ export default function App() {
                           <input
                             type="checkbox"
                             class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
-                            checked={s.useSecondary}
+                            checked={item().useSecondary}
                             onChange={(e) =>
                               setSeriesList((list) =>
-                                list.map((item, i) =>
-                                  i === idx()
+                                list.map((s, i) =>
+                                  i === idx
                                     ? {
-                                        ...item,
+                                        ...s,
                                         useSecondary: e.currentTarget.checked,
                                       }
-                                    : item,
+                                    : s,
                                 ),
                               )
                             }
@@ -1038,17 +1164,17 @@ export default function App() {
                           </span>
                           <select
                             class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
-                            value={s.lineStyle}
+                            value={item().lineStyle}
                             onChange={(e) =>
                               setSeriesList((list) =>
-                                list.map((item, i) =>
-                                  i === idx()
+                                list.map((s, i) =>
+                                  i === idx
                                     ? {
-                                        ...item,
+                                        ...s,
                                         lineStyle: e.currentTarget
                                           .value as LineStyleType,
                                       }
-                                    : item,
+                                    : s,
                                 ),
                               )
                             }
@@ -1065,22 +1191,12 @@ export default function App() {
                           <span class="text-[11px] font-medium text-slate-500">
                             線幅 (px)
                           </span>
-                          <input
-                            type="number"
-                            min="1"
-                            max="10"
-                            class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
-                            value={s.lineWidth}
-                            onInput={(e) =>
+                          <NumberInput
+                            value={item().lineWidth}
+                            onValueChange={(val) =>
                               setSeriesList((list) =>
-                                list.map((item, i) =>
-                                  i === idx()
-                                    ? {
-                                        ...item,
-                                        lineWidth:
-                                          parseInt(e.currentTarget.value) || 1,
-                                      }
-                                    : item,
+                                list.map((s, i) =>
+                                  i === idx ? { ...s, lineWidth: val || 1 } : s,
                                 ),
                               )
                             }
@@ -1093,17 +1209,17 @@ export default function App() {
                           </span>
                           <select
                             class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
-                            value={s.markerType}
+                            value={item().markerType}
                             onChange={(e) =>
                               setSeriesList((list) =>
-                                list.map((item, i) =>
-                                  i === idx()
+                                list.map((s, i) =>
+                                  i === idx
                                     ? {
-                                        ...item,
+                                        ...s,
                                         markerType: e.currentTarget
                                           .value as MarkerType,
                                       }
-                                    : item,
+                                    : s,
                                 ),
                               )
                             }
@@ -1119,22 +1235,14 @@ export default function App() {
                           <span class="text-[11px] font-medium text-slate-500">
                             サイズ
                           </span>
-                          <input
-                            type="number"
-                            min="0"
-                            max="20"
-                            class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
-                            value={s.markerSize}
-                            onInput={(e) =>
+                          <NumberInput
+                            value={item().markerSize}
+                            onValueChange={(val) =>
                               setSeriesList((list) =>
-                                list.map((item, i) =>
-                                  i === idx()
-                                    ? {
-                                        ...item,
-                                        markerSize:
-                                          parseInt(e.currentTarget.value) || 0,
-                                      }
-                                    : item,
+                                list.map((s, i) =>
+                                  i === idx
+                                    ? { ...s, markerSize: val || 0 }
+                                    : s,
                                 ),
                               )
                             }
@@ -1143,7 +1251,7 @@ export default function App() {
                       </div>
                     </div>
                   )}
-                </For>
+                </Index>
               </div>
             </Show>
 
@@ -1159,7 +1267,7 @@ export default function App() {
                     <span class="text-[11px] text-slate-500">軸タイトル</span>
                     <input
                       type="text"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().xDesc}
                       onInput={(e) =>
                         setGraph((g) => ({
@@ -1171,31 +1279,19 @@ export default function App() {
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">開始</span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().xRangeStart}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          xRangeStart: parseFloat(e.currentTarget.value) || 0,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, xRangeStart: val }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">終了</span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().xRangeEnd}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          xRangeEnd: parseFloat(e.currentTarget.value) || 1,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, xRangeEnd: val }))
                       }
                     />
                   </label>
@@ -1205,7 +1301,7 @@ export default function App() {
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">スケール</span>
                     <select
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().xTransform}
                       onChange={(e) =>
                         setGraph((g) => ({
@@ -1223,7 +1319,7 @@ export default function App() {
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">目盛りモード</span>
                     <select
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().xTickMode}
                       onChange={(e) =>
                         setGraph((g) => ({
@@ -1241,21 +1337,62 @@ export default function App() {
                     <span class="text-[11px] text-slate-500">
                       補助グリッド間隔
                     </span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().xMinorGridInterval}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          xMinorGridInterval:
-                            parseFloat(e.currentTarget.value) || 0,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, xMinorGridInterval: val }))
                       }
                     />
                   </label>
                 </div>
+
+                <Show when={graph().xTickMode === "Interval"}>
+                  <div class="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded border border-slate-200">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        ステップ間隔 (Base)
+                      </span>
+                      <NumberInput
+                        value={graph().xIntervalBase}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, xIntervalBase: val || 1 }))
+                        }
+                      />
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        オフセット (Offset)
+                      </span>
+                      <NumberInput
+                        value={graph().xIntervalOffset}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, xIntervalOffset: val }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
+
+                <Show when={graph().xTickMode === "Explicit"}>
+                  <div class="bg-slate-50 p-2.5 rounded border border-slate-200">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        目盛り値リスト (カンマ区切り)
+                      </span>
+                      <input
+                        type="text"
+                        class="bg-white border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                        value={graph().xExplicitTicks}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            xExplicitTicks: e.currentTarget.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
               </div>
 
               {/* Y軸 */}
@@ -1268,7 +1405,7 @@ export default function App() {
                     <span class="text-[11px] text-slate-500">軸タイトル</span>
                     <input
                       type="text"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().yDesc}
                       onInput={(e) =>
                         setGraph((g) => ({
@@ -1280,31 +1417,19 @@ export default function App() {
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">開始</span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().yRangeStart}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          yRangeStart: parseFloat(e.currentTarget.value) || 0,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, yRangeStart: val }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">終了</span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().yRangeEnd}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          yRangeEnd: parseFloat(e.currentTarget.value) || 1,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, yRangeEnd: val }))
                       }
                     />
                   </label>
@@ -1313,7 +1438,7 @@ export default function App() {
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">スケール</span>
                     <select
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().yTransform}
                       onChange={(e) =>
                         setGraph((g) => ({
@@ -1331,7 +1456,7 @@ export default function App() {
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">目盛りモード</span>
                     <select
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().yTickMode}
                       onChange={(e) =>
                         setGraph((g) => ({
@@ -1349,21 +1474,62 @@ export default function App() {
                     <span class="text-[11px] text-slate-500">
                       補助グリッド間隔
                     </span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().yMinorGridInterval}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          yMinorGridInterval:
-                            parseFloat(e.currentTarget.value) || 0,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, yMinorGridInterval: val }))
                       }
                     />
                   </label>
                 </div>
+
+                <Show when={graph().yTickMode === "Interval"}>
+                  <div class="grid grid-cols-2 gap-2 bg-slate-50 p-2.5 rounded border border-slate-200">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        ステップ間隔 (Base)
+                      </span>
+                      <NumberInput
+                        value={graph().yIntervalBase}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, yIntervalBase: val || 1 }))
+                        }
+                      />
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        オフセット (Offset)
+                      </span>
+                      <NumberInput
+                        value={graph().yIntervalOffset}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, yIntervalOffset: val }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
+
+                <Show when={graph().yTickMode === "Explicit"}>
+                  <div class="bg-slate-50 p-2.5 rounded border border-slate-200">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        目盛り値リスト (カンマ区切り)
+                      </span>
+                      <input
+                        type="text"
+                        class="bg-white border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                        value={graph().yExplicitTicks}
+                        onInput={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            yExplicitTicks: e.currentTarget.value,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
               </div>
 
               {/* Y2軸 */}
@@ -1376,7 +1542,7 @@ export default function App() {
                     <span class="text-[11px] text-slate-500">右軸タイトル</span>
                     <input
                       type="text"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
                       value={graph().y2Desc}
                       onInput={(e) =>
                         setGraph((g) => ({
@@ -1388,31 +1554,19 @@ export default function App() {
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">開始</span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().y2RangeStart}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          y2RangeStart: parseFloat(e.currentTarget.value) || 0,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, y2RangeStart: val }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">終了</span>
-                    <input
-                      type="number"
-                      step="any"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().y2RangeEnd}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          y2RangeEnd: parseFloat(e.currentTarget.value) || 1,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, y2RangeEnd: val }))
                       }
                     />
                   </label>
@@ -1422,6 +1576,7 @@ export default function App() {
 
             {/* 3. 余白 & スタイル */}
             <Show when={activeTab() === "layout"}>
+              {/* 解像度 & フォント */}
               <div class="bg-white border border-slate-200 rounded-lg p-3.5 shadow-sm space-y-3">
                 <h3 class="text-xs font-bold text-slate-900 border-b pb-1.5">
                   解像度 & 基本フォント
@@ -1429,15 +1584,10 @@ export default function App() {
                 <div class="grid grid-cols-3 gap-2.5">
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">画像幅 (px)</span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().canvasWidth}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          canvasWidth: parseInt(e.currentTarget.value) || 1600,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, canvasWidth: val || 1600 }))
                       }
                     />
                   </label>
@@ -1445,176 +1595,204 @@ export default function App() {
                     <span class="text-[11px] text-slate-500">
                       画像高さ (px)
                     </span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().canvasHeight}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          canvasHeight: parseInt(e.currentTarget.value) || 1200,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, canvasHeight: val || 1200 }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">
-                      フォントサイズ
+                      基本フォントサイズ (pt)
                     </span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().baseFontSize}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          baseFontSize: parseInt(e.currentTarget.value) || 36,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, baseFontSize: val || 36 }))
                       }
                     />
                   </label>
                 </div>
               </div>
 
+              {/* 余白・軸エリア */}
               <div class="bg-white border border-slate-200 rounded-lg p-3.5 shadow-sm space-y-3">
                 <h3 class="text-xs font-bold text-slate-900 border-b pb-1.5">
-                  余白エリア調整 (px)
+                  余白・エリア幅 (px)
                 </h3>
                 <div class="grid grid-cols-4 gap-2.5">
                   <label class="flex flex-col gap-1">
-                    <span class="text-[11px] text-slate-500">外周余白</span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <span class="text-[11px] text-slate-500">
+                      外周余白 (margin)
+                    </span>
+                    <NumberInput
                       value={graph().margin}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          margin: parseInt(e.currentTarget.value) || 60,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, margin: val || 60 }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
-                    <span class="text-[11px] text-slate-500">X軸エリア</span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <span class="text-[11px] text-slate-500">
+                      X軸エリア (下部)
+                    </span>
+                    <NumberInput
                       value={graph().xLabelArea}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          xLabelArea: parseInt(e.currentTarget.value) || 160,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, xLabelArea: val || 160 }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
-                    <span class="text-[11px] text-slate-500">Y軸エリア</span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <span class="text-[11px] text-slate-500">
+                      Y軸エリア (左部)
+                    </span>
+                    <NumberInput
                       value={graph().yLabelArea}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          yLabelArea: parseInt(e.currentTarget.value) || 180,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, yLabelArea: val || 180 }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
-                    <span class="text-[11px] text-slate-500">右側余白</span>
-                    <input
-                      type="number"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <span class="text-[11px] text-slate-500">
+                      右側余白 / Y2
+                    </span>
+                    <NumberInput
                       value={graph().rightMargin}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          rightMargin: parseInt(e.currentTarget.value) || 140,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, rightMargin: val || 140 }))
                       }
                     />
                   </label>
                 </div>
               </div>
 
+              {/* 目盛り線 & 数値フォーマット */}
               <div class="bg-white border border-slate-200 rounded-lg p-3.5 shadow-sm space-y-3">
                 <h3 class="text-xs font-bold text-slate-900 border-b pb-1.5">
-                  線の太さ & 凡例
+                  目盛り線 (Ticks) & 数値フォーマット
                 </h3>
                 <div class="grid grid-cols-3 gap-2.5">
                   <label class="flex flex-col gap-1">
-                    <span class="text-[11px] text-slate-500">枠線の太さ</span>
-                    <input
-                      type="number"
-                      step="0.5"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                      value={graph().axisWidth}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          axisWidth: parseFloat(e.currentTarget.value) || 3,
-                        }))
-                      }
-                    />
-                  </label>
-                  <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">
-                      目盛り線の太さ
+                      目盛り線の太さ (px)
                     </span>
-                    <input
-                      type="number"
-                      step="0.5"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
+                    <NumberInput
                       value={graph().tickWidth}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          tickWidth: parseFloat(e.currentTarget.value) || 3,
-                        }))
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, tickWidth: val }))
                       }
                     />
                   </label>
                   <label class="flex flex-col gap-1">
                     <span class="text-[11px] text-slate-500">
-                      グリッド線の濃さ
+                      X軸目盛りの長さ (px)
                     </span>
-                    <input
-                      type="number"
-                      step="0.05"
-                      min="0"
-                      max="1"
-                      class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                      value={graph().gridOpacity}
-                      onInput={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          gridOpacity: parseFloat(e.currentTarget.value) || 0.3,
-                        }))
+                    <NumberInput
+                      value={graph().xTickLength}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, xTickLength: val }))
+                      }
+                    />
+                  </label>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      Y軸目盛りの長さ (px)
+                    </span>
+                    <NumberInput
+                      value={graph().yTickLength}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, yTickLength: val }))
                       }
                     />
                   </label>
                 </div>
 
-                <div class="flex items-center gap-6 pt-2">
-                  <label class="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={graph().showLegend}
-                      onChange={(e) =>
-                        setGraph((g) => ({
-                          ...g,
-                          showLegend: e.currentTarget.checked,
-                        }))
+                <div class="grid grid-cols-3 gap-2.5 pt-1">
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      X軸の小数点桁数
+                    </span>
+                    <NumberInput
+                      value={graph().xFormatFixed}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, xFormatFixed: val }))
                       }
                     />
-                    凡例を表示
                   </label>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      Y軸の小数点桁数
+                    </span>
+                    <NumberInput
+                      value={graph().yFormatFixed}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, yFormatFixed: val }))
+                      }
+                    />
+                  </label>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      Y2軸の小数点桁数
+                    </span>
+                    <NumberInput
+                      value={graph().y2FormatFixed}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, y2FormatFixed: val }))
+                      }
+                    />
+                  </label>
+                </div>
+              </div>
+
+              {/* 枠線・グリッド & 十字軸 */}
+              <div class="bg-white border border-slate-200 rounded-lg p-3.5 shadow-sm space-y-3">
+                <h3 class="text-xs font-bold text-slate-900 border-b pb-1.5">
+                  枠線 & グリッド線
+                </h3>
+                <div class="grid grid-cols-3 gap-2.5">
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      外枠の太さ (px)
+                    </span>
+                    <NumberInput
+                      value={graph().axisWidth}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, axisWidth: val }))
+                      }
+                    />
+                  </label>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      グリッド線の太さ (px)
+                    </span>
+                    <NumberInput
+                      value={graph().minorGridWidth}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, minorGridWidth: val }))
+                      }
+                    />
+                  </label>
+                  <label class="flex flex-col gap-1">
+                    <span class="text-[11px] text-slate-500">
+                      グリッド濃さ (0.0〜1.0)
+                    </span>
+                    <NumberInput
+                      value={graph().gridOpacity}
+                      onValueChange={(val) =>
+                        setGraph((g) => ({ ...g, gridOpacity: val }))
+                      }
+                    />
+                  </label>
+                </div>
+
+                <div class="flex items-center gap-6 pt-1">
                   <label class="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
+                      class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
                       checked={graph().useCrossAxes}
                       onChange={(e) =>
                         setGraph((g) => ({
@@ -1623,13 +1801,128 @@ export default function App() {
                         }))
                       }
                     />
-                    十字軸モード (Cross Axes)
+                    十字軸モード（原点 (0,0) で交差）
+                  </label>
+                  <Show when={graph().useCrossAxes}>
+                    <label class="flex items-center gap-2 text-xs font-medium text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                        checked={graph().showCrossBorder}
+                        onChange={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            showCrossBorder: e.currentTarget.checked,
+                          }))
+                        }
+                      />
+                      外枠線も併せて表示
+                    </label>
+                  </Show>
+                </div>
+              </div>
+
+              {/* 凡例スタイル詳細 */}
+              <div class="bg-white border border-slate-200 rounded-lg p-3.5 shadow-sm space-y-3">
+                <div class="flex items-center justify-between border-b pb-1.5">
+                  <h3 class="text-xs font-bold text-slate-900">
+                    凡例 (Legend) の詳細スタイル
+                  </h3>
+                  <label class="flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      class="rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                      checked={graph().showLegend}
+                      onChange={(e) =>
+                        setGraph((g) => ({
+                          ...g,
+                          showLegend: e.currentTarget.checked,
+                        }))
+                      }
+                    />
+                    凡例を表示する
                   </label>
                 </div>
+
+                <Show when={graph().showLegend}>
+                  <div class="grid grid-cols-3 gap-2.5">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">配置位置</span>
+                      <select
+                        class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none focus:bg-white"
+                        value={graph().legendPosition}
+                        onChange={(e) =>
+                          setGraph((g) => ({
+                            ...g,
+                            legendPosition: e.currentTarget
+                              .value as LegendPosition,
+                          }))
+                        }
+                      >
+                        <option value="UpperRight">右上 (UpperRight)</option>
+                        <option value="UpperLeft">左上 (UpperLeft)</option>
+                        <option value="LowerRight">右下 (LowerRight)</option>
+                        <option value="LowerLeft">左下 (LowerLeft)</option>
+                        <option value="MiddleLeft">中左 (MiddleLeft)</option>
+                        <option value="MiddleRight">中右 (MiddleRight)</option>
+                      </select>
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        枠線の太さ (px)
+                      </span>
+                      <NumberInput
+                        value={graph().legendBorderWidth}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, legendBorderWidth: val }))
+                        }
+                      />
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        背景の不透明度 (0.0〜1.0)
+                      </span>
+                      <NumberInput
+                        value={graph().legendBackgroundOpacity}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({
+                            ...g,
+                            legendBackgroundOpacity: val,
+                          }))
+                        }
+                      />
+                    </label>
+                  </div>
+
+                  <div class="grid grid-cols-2 gap-2.5 pt-1">
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        凡例マージン (px)
+                      </span>
+                      <NumberInput
+                        value={graph().legendMargin}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, legendMargin: val }))
+                        }
+                      />
+                    </label>
+                    <label class="flex flex-col gap-1">
+                      <span class="text-[11px] text-slate-500">
+                        凡例行間/エリアサイズ (px)
+                      </span>
+                      <NumberInput
+                        value={graph().legendAreaSize}
+                        onValueChange={(val) =>
+                          setGraph((g) => ({ ...g, legendAreaSize: val }))
+                        }
+                      />
+                    </label>
+                  </div>
+                </Show>
               </div>
             </Show>
 
-            {/* 4. バッチ設定 (詳細フルGUIビルダー) */}
+            {/* 4. バッチ設定 */}
             <Show when={activeTab() === "batch"}>
               <div class="space-y-4">
                 <div class="flex justify-between items-center">
@@ -1638,7 +1931,7 @@ export default function App() {
                       バッチ一括実行ビルダー
                     </h3>
                     <p class="text-[11px] text-slate-500">
-                      各タスクの個別差分（軸・スケール・範囲）をGUIで完全設定
+                      各タスクの個別差分を設定
                     </p>
                   </div>
                   <div class="flex gap-2">
@@ -1659,40 +1952,38 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* タスク一覧 */}
                 <div class="space-y-3">
-                  <For each={batchTasks()}>
+                  <Index each={batchTasks()}>
                     {(task, idx) => (
                       <div class="bg-white border border-slate-200 rounded-lg p-3.5 shadow-sm space-y-3">
-                        {/* タスクヘッダー */}
                         <div class="flex items-center justify-between border-b border-slate-100 pb-2">
                           <button
                             class="flex items-center gap-1.5 text-xs font-bold text-slate-800 hover:text-blue-600 transition"
                             onClick={() =>
                               setBatchTasks((tasks) =>
                                 tasks.map((t, i) =>
-                                  i === idx()
+                                  i === idx
                                     ? { ...t, expanded: !t.expanded }
                                     : t,
                                 ),
                               )
                             }
                           >
-                            {task.expanded ? (
+                            {task().expanded ? (
                               <ChevronDown class="w-4 h-4" />
                             ) : (
                               <ChevronRight class="w-4 h-4" />
                             )}
-                            タスク #{idx() + 1}
+                            タスク #{idx + 1}
                             <span class="text-[11px] font-normal text-slate-500">
-                              ({task.input || "ファイル未選択"})
+                              ({task().input || "ファイル未選択"})
                             </span>
                           </button>
                           <button
                             class="p-1 rounded text-slate-400 hover:text-red-600 hover:bg-red-50 transition"
                             onClick={() =>
                               setBatchTasks((tasks) =>
-                                tasks.filter((_, i) => i !== idx()),
+                                tasks.filter((_, i) => i !== idx),
                               )
                             }
                           >
@@ -1700,22 +1991,21 @@ export default function App() {
                           </button>
                         </div>
 
-                        {/* 基本入出力 */}
                         <div class="grid grid-cols-2 gap-2.5">
                           <div class="flex flex-col gap-1">
                             <span class="text-[11px] text-slate-500">
-                              入力ファイル (必須)
+                              入力ファイル
                             </span>
                             <div class="flex gap-1">
                               <input
                                 type="text"
                                 placeholder="samples/wave.tsv"
                                 class="flex-1 bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                value={task.input}
+                                value={task().input}
                                 onInput={(e) =>
                                   setBatchTasks((tasks) =>
                                     tasks.map((t, i) =>
-                                      i === idx()
+                                      i === idx
                                         ? { ...t, input: e.currentTarget.value }
                                         : t,
                                     ),
@@ -1736,7 +2026,7 @@ export default function App() {
                                   if (sel && !Array.isArray(sel)) {
                                     setBatchTasks((tasks) =>
                                       tasks.map((t, i) =>
-                                        i === idx() ? { ...t, input: sel } : t,
+                                        i === idx ? { ...t, input: sel } : t,
                                       ),
                                     );
                                   }
@@ -1749,17 +2039,17 @@ export default function App() {
 
                           <div class="flex flex-col gap-1">
                             <span class="text-[11px] text-slate-500">
-                              出力先 (省略で同名PNG)
+                              出力先 (省略で同名画像)
                             </span>
                             <input
                               type="text"
-                              placeholder="dist/output.png"
+                              placeholder="dist/output.png または .svg"
                               class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                              value={task.output}
+                              value={task().output}
                               onInput={(e) =>
                                 setBatchTasks((tasks) =>
                                   tasks.map((t, i) =>
-                                    i === idx()
+                                    i === idx
                                       ? { ...t, output: e.currentTarget.value }
                                       : t,
                                   ),
@@ -1769,19 +2059,18 @@ export default function App() {
                           </div>
                         </div>
 
-                        {/* 詳細設定アコーディオン */}
-                        <Show when={task.expanded}>
+                        <Show when={task().expanded}>
                           <div class="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3 pt-2">
                             <div class="flex items-center justify-between border-b pb-2">
                               <label class="flex items-center gap-2 text-xs font-semibold text-slate-800 cursor-pointer">
                                 <input
                                   type="checkbox"
                                   class="rounded border-slate-300 text-blue-600"
-                                  checked={task.overrideSettings}
+                                  checked={task().overrideSettings}
                                   onChange={(e) =>
                                     setBatchTasks((tasks) =>
                                       tasks.map((t, i) =>
-                                        i === idx()
+                                        i === idx
                                           ? {
                                               ...t,
                                               overrideSettings:
@@ -1792,17 +2081,17 @@ export default function App() {
                                     )
                                   }
                                 />
-                                このタスクの個別設定を有効化 (差分上書き)
+                                このタスクの個別設定を有効化
                               </label>
 
                               <label class="flex items-center gap-1.5 text-xs text-slate-600 cursor-pointer">
                                 <input
                                   type="checkbox"
-                                  checked={task.overrideSize}
+                                  checked={task().overrideSize}
                                   onChange={(e) =>
                                     setBatchTasks((tasks) =>
                                       tasks.map((t, i) =>
-                                        i === idx()
+                                        i === idx
                                           ? {
                                               ...t,
                                               overrideSize:
@@ -1817,116 +2106,7 @@ export default function App() {
                               </label>
                             </div>
 
-                            {/* 外部JSON指定 */}
-                            <div class="flex flex-col gap-1">
-                              <span class="text-[11px] text-slate-500">
-                                外部JSON設定ファイル (任意)
-                              </span>
-                              <div class="flex gap-1">
-                                <input
-                                  type="text"
-                                  placeholder="samples/custom_config.json"
-                                  class="flex-1 bg-white border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                  value={task.configPath}
-                                  onInput={(e) =>
-                                    setBatchTasks((tasks) =>
-                                      tasks.map((t, i) =>
-                                        i === idx()
-                                          ? {
-                                              ...t,
-                                              configPath: e.currentTarget.value,
-                                            }
-                                          : t,
-                                      ),
-                                    )
-                                  }
-                                />
-                                <button
-                                  class="px-2 bg-slate-100 border border-slate-300 rounded hover:bg-slate-200"
-                                  onClick={async () => {
-                                    const sel = await open({
-                                      filters: [
-                                        {
-                                          name: "Config JSON",
-                                          extensions: ["json"],
-                                        },
-                                      ],
-                                    });
-                                    if (sel && !Array.isArray(sel)) {
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? { ...t, configPath: sel }
-                                            : t,
-                                        ),
-                                      );
-                                    }
-                                  }}
-                                >
-                                  <FolderOpen class="w-3.5 h-3.5 text-slate-600" />
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* 解像度個別指定 */}
-                            <Show when={task.overrideSize}>
-                              <div class="grid grid-cols-2 gap-2 bg-white p-2 rounded border border-slate-200">
-                                <label class="flex flex-col gap-1">
-                                  <span class="text-[11px] text-slate-500">
-                                    幅 (px)
-                                  </span>
-                                  <input
-                                    type="number"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.width}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                width:
-                                                  parseInt(
-                                                    e.currentTarget.value,
-                                                  ) || 1920,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                </label>
-                                <label class="flex flex-col gap-1">
-                                  <span class="text-[11px] text-slate-500">
-                                    高さ (px)
-                                  </span>
-                                  <input
-                                    type="number"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.height}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                height:
-                                                  parseInt(
-                                                    e.currentTarget.value,
-                                                  ) || 1440,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                </label>
-                              </div>
-                            </Show>
-
-                            {/* 軸個別設定 */}
-                            <Show when={task.overrideSettings}>
-                              {/* タスクX軸 */}
+                            <Show when={task().overrideSettings}>
                               <div class="bg-white p-2.5 rounded border border-slate-200 space-y-2">
                                 <span class="text-xs font-bold text-slate-700">
                                   X 軸設定
@@ -1936,11 +2116,11 @@ export default function App() {
                                     type="text"
                                     placeholder="タイトル"
                                     class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.xDesc}
+                                    value={task().xDesc}
                                     onInput={(e) =>
                                       setBatchTasks((tasks) =>
                                         tasks.map((t, i) =>
-                                          i === idx()
+                                          i === idx
                                             ? {
                                                 ...t,
                                                 xDesc: e.currentTarget.value,
@@ -1950,121 +2130,35 @@ export default function App() {
                                       )
                                     }
                                   />
-                                  <input
-                                    type="number"
-                                    step="any"
+                                  <NumberInput
+                                    value={task().xRangeStart}
+                                    onValueChange={(val) =>
+                                      setBatchTasks((tasks) =>
+                                        tasks.map((t, i) =>
+                                          i === idx
+                                            ? { ...t, xRangeStart: val }
+                                            : t,
+                                        ),
+                                      )
+                                    }
                                     placeholder="開始"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.xRangeStart}
-                                    onInput={(e) =>
+                                  />
+                                  <NumberInput
+                                    value={task().xRangeEnd}
+                                    onValueChange={(val) =>
                                       setBatchTasks((tasks) =>
                                         tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                xRangeStart:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 0,
-                                              }
+                                          i === idx
+                                            ? { ...t, xRangeEnd: val }
                                             : t,
                                         ),
                                       )
                                     }
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
                                     placeholder="終了"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.xRangeEnd}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                xRangeEnd:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 1,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                </div>
-                                <div class="grid grid-cols-3 gap-2">
-                                  <select
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.xTransform}
-                                    onChange={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                xTransform: e.currentTarget
-                                                  .value as AxisTransformType,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  >
-                                    <option value="Linear">Linear</option>
-                                    <option value="Log10">Log10 (対数)</option>
-                                    <option value="BiLinear">BiLinear</option>
-                                  </select>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="目盛り間隔"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.xIntervalBase}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                xIntervalBase:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 1,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="補助線間隔"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.xMinorGridInterval}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                xMinorGridInterval:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 0,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
                                   />
                                 </div>
                               </div>
 
-                              {/* タスクY軸 */}
                               <div class="bg-white p-2.5 rounded border border-slate-200 space-y-2">
                                 <span class="text-xs font-bold text-slate-700">
                                   Y 軸設定
@@ -2074,11 +2168,11 @@ export default function App() {
                                     type="text"
                                     placeholder="タイトル"
                                     class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.yDesc}
+                                    value={task().yDesc}
                                     onInput={(e) =>
                                       setBatchTasks((tasks) =>
                                         tasks.map((t, i) =>
-                                          i === idx()
+                                          i === idx
                                             ? {
                                                 ...t,
                                                 yDesc: e.currentTarget.value,
@@ -2088,169 +2182,40 @@ export default function App() {
                                       )
                                     }
                                   />
-                                  <input
-                                    type="number"
-                                    step="any"
+                                  <NumberInput
+                                    value={task().yRangeStart}
+                                    onValueChange={(val) =>
+                                      setBatchTasks((tasks) =>
+                                        tasks.map((t, i) =>
+                                          i === idx
+                                            ? { ...t, yRangeStart: val }
+                                            : t,
+                                        ),
+                                      )
+                                    }
                                     placeholder="開始"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.yRangeStart}
-                                    onInput={(e) =>
+                                  />
+                                  <NumberInput
+                                    value={task().yRangeEnd}
+                                    onValueChange={(val) =>
                                       setBatchTasks((tasks) =>
                                         tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                yRangeStart:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 0,
-                                              }
+                                          i === idx
+                                            ? { ...t, yRangeEnd: val }
                                             : t,
                                         ),
                                       )
                                     }
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
                                     placeholder="終了"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.yRangeEnd}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                yRangeEnd:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 1,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
                                   />
                                 </div>
-                                <div class="grid grid-cols-3 gap-2">
-                                  <select
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.yTransform}
-                                    onChange={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                yTransform: e.currentTarget
-                                                  .value as AxisTransformType,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  >
-                                    <option value="Linear">Linear</option>
-                                    <option value="Log10">Log10</option>
-                                    <option value="BiLinear">BiLinear</option>
-                                  </select>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="目盛り間隔"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.yIntervalBase}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                yIntervalBase:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 1,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    placeholder="補助線間隔"
-                                    class="bg-slate-50 border border-slate-300 rounded px-2 py-1 text-xs outline-none"
-                                    value={task.yMinorGridInterval}
-                                    onInput={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                yMinorGridInterval:
-                                                  parseFloat(
-                                                    e.currentTarget.value,
-                                                  ) || 0,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                </div>
-                              </div>
-
-                              {/* その他オプション */}
-                              <div class="flex items-center gap-4 pt-1">
-                                <label class="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={task.useCrossAxes}
-                                    onChange={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                useCrossAxes:
-                                                  e.currentTarget.checked,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                  十字軸モード
-                                </label>
-                                <label class="flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={task.showLegend}
-                                    onChange={(e) =>
-                                      setBatchTasks((tasks) =>
-                                        tasks.map((t, i) =>
-                                          i === idx()
-                                            ? {
-                                                ...t,
-                                                showLegend:
-                                                  e.currentTarget.checked,
-                                              }
-                                            : t,
-                                        ),
-                                      )
-                                    }
-                                  />
-                                  凡例表示
-                                </label>
                               </div>
                             </Show>
                           </div>
                         </Show>
                       </div>
                     )}
-                  </For>
+                  </Index>
                 </div>
               </div>
             </Show>

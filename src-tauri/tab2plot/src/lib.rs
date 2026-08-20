@@ -247,7 +247,7 @@ pub struct SeriesData {
 }
 
 /// グラフ全体の設定
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(default)]
 pub struct GraphConfig {
     pub base_font_size: Option<u32>,
@@ -327,6 +327,8 @@ pub struct GraphConfig {
 
     #[serde(default)]
     pub use_cross_axes: bool,
+    #[serde(default)]
+    pub show_cross_border: bool,
 
     #[serde(default)]
     pub axis_width: Option<f32>,
@@ -377,6 +379,7 @@ impl Default for GraphConfig {
             minor_grid_width: Some(1.0),
             grid_opacity: Some(0.3),
             use_cross_axes: false,
+            show_cross_border: false,
             axis_width: Some(3.0),
             series_styles: Vec::new(),
         }
@@ -518,20 +521,16 @@ fn generate_dashed_segments(
     segments
 }
 
-/// グラフ描画本体
-pub fn generate_graph_image(
+/// 描画共通コアロジック
+fn render_chart_to_area<DB: DrawingBackend>(
+    root: &DrawingArea<DB, plotters::coord::Shift>,
     width: u32,
     height: u32,
     config: &GraphConfig,
     series_list: &[SeriesData],
-) -> Result<Vec<u8>, GraphError> {
-    if width == 0 || height == 0 {
-        return Err(GraphError::InvalidData(
-            "画像の幅および高さは1px以上を指定してください".to_string(),
-        ));
-    }
-
-    ensure_font_registered()?;
+) -> Result<(), GraphError> {
+    root.fill(&WHITE)
+        .map_err(|e| GraphError::Drawing(e.to_string()))?;
 
     let scale_x = width as f64 / 1920.0;
     let scale_y = height as f64 / 1440.0;
@@ -672,14 +671,19 @@ pub fn generate_graph_image(
         (height as f64 - (base_margin + x_label_area) as f64 - base_margin as f64).max(10.0);
     let aspect_ratio = plot_h / plot_w;
 
-    let mut buf = vec![0u8; (width * height * 3) as usize];
+    let mut chart_builder = ChartBuilder::on(root);
 
-    {
-        let root = BitMapBackend::with_buffer(&mut buf, (width, height)).into_drawing_area();
-        root.fill(&WHITE)
-            .map_err(|e| GraphError::Drawing(e.to_string()))?;
-
-        let mut chart_builder = ChartBuilder::on(&root);
+    // --- 左右・上下マージンの自動バランシング ---
+    if config.use_cross_axes {
+        // 十字軸モード: 下・左のエリアを廃止し、均等なマージンで完全に中央配置
+        let cross_margin = config.margin.unwrap_or(((90.0 * scale) as u32).max(60));
+        chart_builder.margin(cross_margin);
+        chart_builder.x_label_area_size(0);
+        chart_builder.y_label_area_size(0);
+        if config.show_legend {
+            chart_builder.margin_right(cross_margin + right_margin / 2);
+        }
+    } else {
         chart_builder
             .margin(base_margin)
             .x_label_area_size(x_label_area)
@@ -689,276 +693,335 @@ pub fn generate_graph_image(
             chart_builder.right_y_label_area_size(y_label_area);
         } else if config.show_legend {
             chart_builder.margin_right(right_margin);
-        }
-
-        let mut chart = chart_builder
-            .build_cartesian_2d(x_plot_range.clone(), y_plot_range.clone())
-            .map_err(|e| GraphError::Drawing(e.to_string()))?
-            .set_secondary_coord(x_plot_range.clone(), y2_plot_range.clone());
-
-        let x_digits = config.x_format_fixed;
-        let y_digits = config.y_format_fixed;
-        let y2_digits = config.y2_format_fixed;
-
-        let x_transform = config.x_transform;
-        let y_transform = config.y_transform;
-        let y2_transform = config.y2_transform;
-
-        let x_real_min = x_transform.inverse(x_plot_range.start);
-        let x_real_max = x_transform.inverse(x_plot_range.end);
-        let (x_real_lo, x_real_hi) = (x_real_min.min(x_real_max), x_real_min.max(x_real_max));
-        let x_ticks_resolved = config.x_ticks_mode.resolve(x_real_lo, x_real_hi);
-
-        let y_real_min = y_transform.inverse(y_plot_range.start);
-        let y_real_max = y_transform.inverse(y_plot_range.end);
-        let (y_real_lo, y_real_hi) = (y_real_min.min(y_real_max), y_real_min.max(y_real_max));
-        let y_ticks_resolved = config.y_ticks_mode.resolve(y_real_lo, y_real_hi);
-
-        let border_width = (config.axis_width.unwrap_or(6.0) as f64 * scale).max(1.0) as u32;
-        let tick_width = (config.tick_width.unwrap_or(3.0) as f64 * scale).max(1.0) as u32;
-        let x_tick_len = (config.x_tick_length as f64 * scale).max(2.0) as i32;
-        let y_tick_len = (config.y_tick_length as f64 * scale).max(2.0) as i32;
-
-        if config.use_cross_axes {
-            chart
-                .configure_mesh()
-                .disable_x_mesh()
-                .disable_y_mesh()
-                .disable_x_axis()
-                .disable_y_axis()
-                .draw()
-                .map_err(|e| GraphError::Drawing(e.to_string()))?;
-
-            let center_y = if y_plot_range.contains(&0.0) {
-                0.0
-            } else {
-                y_plot_range.start
-            };
-            let center_x = if x_plot_range.contains(&0.0) {
-                0.0
-            } else {
-                x_plot_range.start
-            };
-
-            if y_plot_range.contains(&0.0) {
-                chart
-                    .draw_series(std::iter::once(PathElement::new(
-                        vec![(x_plot_range.start, 0.0), (x_plot_range.end, 0.0)],
-                        BLACK.stroke_width(border_width),
-                    )))
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
-            }
-            if x_plot_range.contains(&0.0) {
-                chart
-                    .draw_series(std::iter::once(PathElement::new(
-                        vec![(0.0, y_plot_range.start), (0.0, y_plot_range.end)],
-                        BLACK.stroke_width(border_width),
-                    )))
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
-            }
-
-            // X軸タイトル (Serif)
-            if !config.x_desc.is_empty() {
-                let style = TextStyle::from((font_desc, font_size_desc).into_font())
-                    .pos(Pos::new(HPos::Left, VPos::Top));
-                chart
-                    .draw_series(std::iter::once(
-                        EmptyElement::at((x_plot_range.end, y_plot_range.start))
-                            + Text::new(config.x_desc.clone(), (10, 10), style),
-                    ))
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
-            }
-
-            // Y軸タイトル (Serif)
-            if !config.y_desc.is_empty() {
-                let style = TextStyle::from((font_desc, font_size_desc).into_font())
-                    .pos(Pos::new(HPos::Right, VPos::Bottom));
-                chart
-                    .draw_series(std::iter::once(
-                        EmptyElement::at((center_x, y_plot_range.end))
-                            + Text::new(config.y_desc.clone(), (-15, -15), style),
-                    ))
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
-            }
-
-            // X軸目盛り線 & ラベル (Sans)
-            if let Some(ticks) = &x_ticks_resolved {
-                for &tv in ticks {
-                    let tx = x_transform.forward(tv);
-                    if tx < x_plot_range.start || tx > x_plot_range.end {
-                        continue;
-                    }
-                    if y_plot_range.contains(&0.0) {
-                        chart
-                            .draw_series(std::iter::once(
-                                EmptyElement::at((tx, center_y))
-                                    + PathElement::new(
-                                        vec![(0, -x_tick_len / 2), (0, x_tick_len / 2)],
-                                        BLACK.stroke_width(tick_width),
-                                    ),
-                            ))
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                    }
-
-                    let label = format!("{:.precision$}", tv, precision = x_digits);
-                    let (pos, offset) = if tv.abs() < 1e-9 {
-                        (Pos::new(HPos::Right, VPos::Top), (-6, 6))
-                    } else {
-                        (Pos::new(HPos::Center, VPos::Top), (0, 12))
-                    };
-                    let style = TextStyle::from((font_ticks, font_size_label).into_font()).pos(pos);
-
-                    chart
-                        .draw_series(std::iter::once(
-                            EmptyElement::at((tx, center_y)) + Text::new(label, offset, style),
-                        ))
-                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                }
-            }
-
-            // Y軸目盛り線 & ラベル (Sans)
-            if let Some(ticks) = &y_ticks_resolved {
-                for &tv in ticks {
-                    let ty = y_transform.forward(tv);
-                    if ty < y_plot_range.start || ty > y_plot_range.end {
-                        continue;
-                    }
-                    if x_plot_range.contains(&0.0) {
-                        chart
-                            .draw_series(std::iter::once(
-                                EmptyElement::at((center_x, ty))
-                                    + PathElement::new(
-                                        vec![(-y_tick_len / 2, 0), (y_tick_len / 2, 0)],
-                                        BLACK.stroke_width(tick_width),
-                                    ),
-                            ))
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                    }
-
-                    if tv.abs() < 1e-9 {
-                        continue;
-                    }
-                    let label = format!("{:.precision$}", tv, precision = y_digits);
-                    let style = TextStyle::from((font_ticks, font_size_label).into_font())
-                        .pos(Pos::new(HPos::Right, VPos::Center));
-
-                    chart
-                        .draw_series(std::iter::once(
-                            EmptyElement::at((center_x, ty)) + Text::new(label, (-15, 0), style),
-                        ))
-                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                }
-            }
         } else {
-            let x_fmt = |x: &f64| {
-                let v = x_transform.inverse(*x);
-                format!("{:.precision$}", v, precision = x_digits)
-            };
-            let y_fmt = |y: &f64| {
-                let v = y_transform.inverse(*y);
-                format!("{:.precision$}", v, precision = y_digits)
-            };
-            let mut mesh = chart.configure_mesh();
-            mesh.x_desc(&config.x_desc)
-                .y_desc(&config.y_desc)
-                .axis_desc_style((font_desc, font_size_desc))
-                .label_style((font_ticks, font_size_label))
-                .axis_style(TRANSPARENT)
-                .disable_x_mesh()
-                .disable_y_mesh()
-                .bold_line_style(BLACK.mix(0.2).stroke_width(2))
-                .light_line_style(TRANSPARENT)
-                .set_all_tick_mark_size((20.0 * scale) as u32)
-                .x_label_formatter(&x_fmt)
-                .y_label_formatter(&y_fmt);
+            // 凡例非表示時: 左の y_label_area と釣り合うよう右余白を自動補正して中央揃え
+            chart_builder.margin_right(base_margin + y_label_area);
+        }
+    }
 
-            match &x_ticks_resolved {
-                Some(ticks) => {
-                    mesh.x_labels(ticks.len().max(1));
-                }
-                None => {
-                    mesh.x_labels(config.x_labels);
-                }
-            }
-            match &y_ticks_resolved {
-                Some(ticks) => {
-                    mesh.y_labels(ticks.len().max(1));
-                }
-                None => {
-                    mesh.y_labels(config.y_labels);
-                }
-            }
+    let mut chart = chart_builder
+        .build_cartesian_2d(x_plot_range.clone(), y_plot_range.clone())
+        .map_err(|e| GraphError::Drawing(e.to_string()))?
+        .set_secondary_coord(x_plot_range.clone(), y2_plot_range.clone());
 
-            mesh.draw()
-                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+    let x_digits = config.x_format_fixed;
+    let y_digits = config.y_format_fixed;
+    let y2_digits = config.y2_format_fixed;
 
-            // 標準外枠モードの外枠
+    let x_transform = config.x_transform;
+    let y_transform = config.y_transform;
+    let y2_transform = config.y2_transform;
+
+    let x_real_min = x_transform.inverse(x_plot_range.start);
+    let x_real_max = x_transform.inverse(x_plot_range.end);
+    let (x_real_lo, x_real_hi) = (x_real_min.min(x_real_max), x_real_min.max(x_real_max));
+    let x_ticks_resolved = config.x_ticks_mode.resolve(x_real_lo, x_real_hi);
+
+    let y_real_min = y_transform.inverse(y_plot_range.start);
+    let y_real_max = y_transform.inverse(y_plot_range.end);
+    let (y_real_lo, y_real_hi) = (y_real_min.min(y_real_max), y_real_min.max(y_real_max));
+    let y_ticks_resolved = config.y_ticks_mode.resolve(y_real_lo, y_real_hi);
+
+    let border_width = (config.axis_width.unwrap_or(6.0) as f64 * scale).max(1.0) as u32;
+    let tick_width = (config.tick_width.unwrap_or(3.0) as f64 * scale).max(1.0) as u32;
+    let x_tick_len = (config.x_tick_length as f64 * scale).max(2.0) as i32;
+    let y_tick_len = (config.y_tick_length as f64 * scale).max(2.0) as i32;
+
+    if config.use_cross_axes {
+        chart
+            .configure_mesh()
+            .disable_x_mesh()
+            .disable_y_mesh()
+            .disable_x_axis()
+            .disable_y_axis()
+            .draw()
+            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+
+        let center_y = if y_plot_range.contains(&0.0) {
+            0.0
+        } else {
+            y_plot_range.start
+        };
+        let center_x = if x_plot_range.contains(&0.0) {
+            0.0
+        } else {
+            x_plot_range.start
+        };
+
+        // 十字軸モード時の外枠描画オプション
+        if config.show_cross_border {
             chart
                 .draw_series(std::iter::once(Rectangle::new(
                     [
                         (x_plot_range.start, y_plot_range.start),
                         (x_plot_range.end, y_plot_range.end),
                     ],
+                    BLACK.mix(0.4).stroke_width((border_width / 2).max(1)),
+                )))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+        }
+
+        if y_plot_range.contains(&0.0) {
+            chart
+                .draw_series(std::iter::once(PathElement::new(
+                    vec![(x_plot_range.start, 0.0), (x_plot_range.end, 0.0)],
                     BLACK.stroke_width(border_width),
                 )))
                 .map_err(|e| GraphError::Drawing(e.to_string()))?;
-
-            // 内向き目盛り線
-            if let Some(ticks) = &x_ticks_resolved {
-                for &tv in ticks {
-                    let tx = x_transform.forward(tv);
-                    if tx < x_plot_range.start || tx > x_plot_range.end {
-                        continue;
-                    }
-                    chart
-                        .draw_series(std::iter::once(
-                            EmptyElement::at((tx, y_plot_range.start))
-                                + PathElement::new(
-                                    vec![(0, 0), (0, -x_tick_len)],
-                                    BLACK.stroke_width(tick_width),
-                                ),
-                        ))
-                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                }
-            }
-
-            if let Some(ticks) = &y_ticks_resolved {
-                for &tv in ticks {
-                    let ty = y_transform.forward(tv);
-                    if ty < y_plot_range.start || ty > y_plot_range.end {
-                        continue;
-                    }
-                    chart
-                        .draw_series(std::iter::once(
-                            EmptyElement::at((x_plot_range.start, ty))
-                                + PathElement::new(
-                                    vec![(0, 0), (y_tick_len, 0)],
-                                    BLACK.stroke_width(tick_width),
-                                ),
-                        ))
-                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                }
-            }
+        }
+        if x_plot_range.contains(&0.0) {
+            chart
+                .draw_series(std::iter::once(PathElement::new(
+                    vec![(0.0, y_plot_range.start), (0.0, y_plot_range.end)],
+                    BLACK.stroke_width(border_width),
+                )))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
         }
 
-        // 補助グリッド
-        let grid_width = (config.minor_grid_width.unwrap_or(1.0) as f64 * scale).max(1.0) as u32;
-        let grid_opacity = config.grid_opacity.unwrap_or(0.3).clamp(0.0, 1.0);
+        // X軸タイトル (Serif: はみ出さない安全位置)
+        if !config.x_desc.is_empty() {
+            let style = TextStyle::from((font_desc, font_size_desc).into_font())
+                .pos(Pos::new(HPos::Right, VPos::Top));
+            chart
+                .draw_series(std::iter::once(
+                    EmptyElement::at((x_plot_range.end, center_y))
+                        + Text::new(config.x_desc.clone(), (0, 15), style),
+                ))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+        }
 
-        if let Some(interval) = config.x_minor_grid_interval {
-            for tx in minor_grid_lines(&x_plot_range, interval) {
+        // Y軸タイトル (Serif: はみ出さない安全位置)
+        if !config.y_desc.is_empty() {
+            let style = TextStyle::from((font_desc, font_size_desc).into_font())
+                .pos(Pos::new(HPos::Left, VPos::Bottom));
+            chart
+                .draw_series(std::iter::once(
+                    EmptyElement::at((center_x, y_plot_range.end))
+                        + Text::new(config.y_desc.clone(), (15, 0), style),
+                ))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+        }
+
+        // X軸目盛り線 & ラベル (Sans)
+        if let Some(ticks) = &x_ticks_resolved {
+            for &tv in ticks {
+                let tx = x_transform.forward(tv);
+                if tx < x_plot_range.start || tx > x_plot_range.end {
+                    continue;
+                }
+                if y_plot_range.contains(&0.0) {
+                    chart
+                        .draw_series(std::iter::once(
+                            EmptyElement::at((tx, center_y))
+                                + PathElement::new(
+                                    vec![(0, -x_tick_len / 2), (0, x_tick_len / 2)],
+                                    BLACK.stroke_width(tick_width),
+                                ),
+                        ))
+                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                }
+
+                let label = format!("{:.precision$}", tv, precision = x_digits);
+                let (pos, offset) = if tv.abs() < 1e-9 {
+                    (Pos::new(HPos::Right, VPos::Top), (-6, 6))
+                } else {
+                    (Pos::new(HPos::Center, VPos::Top), (0, 12))
+                };
+                let style = TextStyle::from((font_ticks, font_size_label).into_font()).pos(pos);
+
                 chart
-                    .draw_series(std::iter::once(PathElement::new(
-                        vec![(tx, y_plot_range.start), (tx, y_plot_range.end)],
-                        BLACK.mix(grid_opacity).stroke_width(grid_width),
-                    )))
+                    .draw_series(std::iter::once(
+                        EmptyElement::at((tx, center_y)) + Text::new(label, offset, style),
+                    ))
                     .map_err(|e| GraphError::Drawing(e.to_string()))?;
             }
         }
-        if let Some(interval) = config.y_minor_grid_interval {
-            for ty in minor_grid_lines(&y_plot_range, interval) {
+
+        // Y軸目盛り線 & ラベル (Sans)
+        if let Some(ticks) = &y_ticks_resolved {
+            for &tv in ticks {
+                let ty = y_transform.forward(tv);
+                if ty < y_plot_range.start || ty > y_plot_range.end {
+                    continue;
+                }
+                if x_plot_range.contains(&0.0) {
+                    chart
+                        .draw_series(std::iter::once(
+                            EmptyElement::at((center_x, ty))
+                                + PathElement::new(
+                                    vec![(-y_tick_len / 2, 0), (y_tick_len / 2, 0)],
+                                    BLACK.stroke_width(tick_width),
+                                ),
+                        ))
+                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                }
+
+                if tv.abs() < 1e-9 {
+                    continue;
+                }
+                let label = format!("{:.precision$}", tv, precision = y_digits);
+                let style = TextStyle::from((font_ticks, font_size_label).into_font())
+                    .pos(Pos::new(HPos::Right, VPos::Center));
+
                 chart
-                    .draw_series(std::iter::once(PathElement::new(
+                    .draw_series(std::iter::once(
+                        EmptyElement::at((center_x, ty)) + Text::new(label, (-15, 0), style),
+                    ))
+                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
+            }
+        }
+    } else {
+        let x_fmt = |x: &f64| {
+            let v = x_transform.inverse(*x);
+            format!("{:.precision$}", v, precision = x_digits)
+        };
+        let y_fmt = |y: &f64| {
+            let v = y_transform.inverse(*y);
+            format!("{:.precision$}", v, precision = y_digits)
+        };
+        let mut mesh = chart.configure_mesh();
+        mesh.x_desc(&config.x_desc)
+            .y_desc(&config.y_desc)
+            .axis_desc_style((font_desc, font_size_desc))
+            .label_style((font_ticks, font_size_label))
+            .axis_style(TRANSPARENT)
+            .disable_x_mesh()
+            .disable_y_mesh()
+            .bold_line_style(BLACK.mix(0.2).stroke_width(2))
+            .light_line_style(TRANSPARENT)
+            .set_all_tick_mark_size((20.0 * scale) as u32)
+            .x_label_formatter(&x_fmt)
+            .y_label_formatter(&y_fmt);
+
+        match &x_ticks_resolved {
+            Some(ticks) => {
+                mesh.x_labels(ticks.len().max(1));
+            }
+            None => {
+                mesh.x_labels(config.x_labels);
+            }
+        }
+        match &y_ticks_resolved {
+            Some(ticks) => {
+                mesh.y_labels(ticks.len().max(1));
+            }
+            None => {
+                mesh.y_labels(config.y_labels);
+            }
+        }
+
+        mesh.draw()
+            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+
+        // 標準外枠モードの外枠
+        chart
+            .draw_series(std::iter::once(Rectangle::new(
+                [
+                    (x_plot_range.start, y_plot_range.start),
+                    (x_plot_range.end, y_plot_range.end),
+                ],
+                BLACK.stroke_width(border_width),
+            )))
+            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+
+        // 内向き目盛り線
+        if let Some(ticks) = &x_ticks_resolved {
+            for &tv in ticks {
+                let tx = x_transform.forward(tv);
+                if tx < x_plot_range.start || tx > x_plot_range.end {
+                    continue;
+                }
+                chart
+                    .draw_series(std::iter::once(
+                        EmptyElement::at((tx, y_plot_range.start))
+                            + PathElement::new(
+                                vec![(0, 0), (0, -x_tick_len)],
+                                BLACK.stroke_width(tick_width),
+                            ),
+                    ))
+                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
+            }
+        }
+
+        if let Some(ticks) = &y_ticks_resolved {
+            for &tv in ticks {
+                let ty = y_transform.forward(tv);
+                if ty < y_plot_range.start || ty > y_plot_range.end {
+                    continue;
+                }
+                chart
+                    .draw_series(std::iter::once(
+                        EmptyElement::at((x_plot_range.start, ty))
+                            + PathElement::new(
+                                vec![(0, 0), (y_tick_len, 0)],
+                                BLACK.stroke_width(tick_width),
+                            ),
+                    ))
+                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
+            }
+        }
+    }
+
+    // 補助グリッド
+    let grid_width = (config.minor_grid_width.unwrap_or(1.0) as f64 * scale).max(1.0) as u32;
+    let grid_opacity = config.grid_opacity.unwrap_or(0.3).clamp(0.0, 1.0);
+
+    if let Some(interval) = config.x_minor_grid_interval {
+        for tx in minor_grid_lines(&x_plot_range, interval) {
+            chart
+                .draw_series(std::iter::once(PathElement::new(
+                    vec![(tx, y_plot_range.start), (tx, y_plot_range.end)],
+                    BLACK.mix(grid_opacity).stroke_width(grid_width),
+                )))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+        }
+    }
+    if let Some(interval) = config.y_minor_grid_interval {
+        for ty in minor_grid_lines(&y_plot_range, interval) {
+            chart
+                .draw_series(std::iter::once(PathElement::new(
+                    vec![(x_plot_range.start, ty), (x_plot_range.end, ty)],
+                    BLACK.mix(grid_opacity).stroke_width(grid_width),
+                )))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+        }
+    }
+
+    // 第2軸
+    if has_secondary {
+        let y2_real_min = y2_transform.inverse(y2_plot_range.start);
+        let y2_real_max = y2_transform.inverse(y2_plot_range.end);
+        let (y2_real_lo, y2_real_hi) = (y2_real_min.min(y2_real_max), y2_real_min.max(y2_real_max));
+        let y2_ticks_resolved = config.y2_ticks_mode.resolve(y2_real_lo, y2_real_hi);
+
+        {
+            let y2_fmt = |y: &f64| {
+                let v = y2_transform.inverse(*y);
+                format!("{:.precision$}", v, precision = y2_digits)
+            };
+            let mut mesh2 = chart.configure_secondary_axes();
+            mesh2
+                .y_desc(&config.y2_desc)
+                .axis_desc_style((font_desc, font_size_desc))
+                .label_style((font_ticks, font_size_label))
+                .y_label_formatter(&y2_fmt);
+            match &y2_ticks_resolved {
+                Some(ticks) => {
+                    mesh2.y_labels(ticks.len().max(1));
+                }
+                None => {
+                    mesh2.y_labels(config.y2_labels.max(1));
+                }
+            }
+            mesh2
+                .draw()
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+        }
+
+        if let Some(interval) = config.y2_minor_grid_interval {
+            for ty in minor_grid_lines(&y2_plot_range, interval) {
+                chart
+                    .draw_secondary_series(std::iter::once(PathElement::new(
                         vec![(x_plot_range.start, ty), (x_plot_range.end, ty)],
                         BLACK.mix(grid_opacity).stroke_width(grid_width),
                     )))
@@ -966,105 +1029,108 @@ pub fn generate_graph_image(
             }
         }
 
-        // 第2軸
-        if has_secondary {
-            let y2_real_min = y2_transform.inverse(y2_plot_range.start);
-            let y2_real_max = y2_transform.inverse(y2_plot_range.end);
-            let (y2_real_lo, y2_real_hi) =
-                (y2_real_min.min(y2_real_max), y2_real_min.max(y2_real_max));
-            let y2_ticks_resolved = config.y2_ticks_mode.resolve(y2_real_lo, y2_real_hi);
-
-            {
-                let y2_fmt = |y: &f64| {
-                    let v = y2_transform.inverse(*y);
-                    format!("{:.precision$}", v, precision = y2_digits)
-                };
-                let mut mesh2 = chart.configure_secondary_axes();
-                mesh2
-                    .y_desc(&config.y2_desc)
-                    .axis_desc_style((font_desc, font_size_desc))
-                    .label_style((font_ticks, font_size_label))
-                    .y_label_formatter(&y2_fmt);
-                match &y2_ticks_resolved {
-                    Some(ticks) => {
-                        mesh2.y_labels(ticks.len().max(1));
-                    }
-                    None => {
-                        mesh2.y_labels(config.y2_labels.max(1));
-                    }
-                }
-                mesh2
-                    .draw()
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
-            }
-
-            if let Some(interval) = config.y2_minor_grid_interval {
-                for ty in minor_grid_lines(&y2_plot_range, interval) {
-                    chart
-                        .draw_secondary_series(std::iter::once(PathElement::new(
-                            vec![(x_plot_range.start, ty), (x_plot_range.end, ty)],
-                            BLACK.mix(grid_opacity).stroke_width(grid_width),
-                        )))
-                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
-                }
-            }
-
-            for series in &secondary_series {
-                draw_one_series_secondary(
-                    &mut chart,
-                    series,
-                    config.show_legend,
-                    x_span,
-                    y2_span,
-                    aspect_ratio,
-                )?;
-            }
-        }
-
-        for series in &primary_series {
-            draw_one_series_primary(
+        for series in &secondary_series {
+            draw_one_series_secondary(
                 &mut chart,
                 series,
                 config.show_legend,
                 x_span,
-                y_span,
+                y2_span,
                 aspect_ratio,
             )?;
         }
+    }
 
-        // 凡例 (Serif)
-        if config.show_legend {
-            let pos: SeriesLabelPosition = config.legend_position.into();
-            let leg_border =
-                (config.legend_border_width.unwrap_or(3.0) as f64 * scale).max(1.0) as u32;
-            let leg_bg_opacity = config
-                .legend_background_opacity
-                .unwrap_or(0.8)
-                .clamp(0.0, 1.0);
-            let leg_margin = config
-                .legend_margin
-                .unwrap_or(((20.0 * scale) as u32).max(5));
-            let leg_area = config
-                .legend_area_size
-                .unwrap_or(((50.0 * scale) as u32).max(20));
+    for series in &primary_series {
+        draw_one_series_primary(
+            &mut chart,
+            series,
+            config.show_legend,
+            x_span,
+            y_span,
+            aspect_ratio,
+        )?;
+    }
 
-            chart
-                .configure_series_labels()
-                .background_style(&WHITE.mix(leg_bg_opacity))
-                .border_style(BLACK.stroke_width(leg_border))
-                .label_font((font_legend, font_size_label))
-                .position(pos)
-                .margin(leg_margin)
-                .legend_area_size(leg_area)
-                .draw()
-                .map_err(|e| GraphError::Drawing(e.to_string()))?;
-        }
+    // 凡例 (Serif)
+    if config.show_legend {
+        let pos: SeriesLabelPosition = config.legend_position.into();
+        let leg_border = (config.legend_border_width.unwrap_or(3.0) as f64 * scale).max(1.0) as u32;
+        let leg_bg_opacity = config
+            .legend_background_opacity
+            .unwrap_or(0.8)
+            .clamp(0.0, 1.0);
+        let leg_margin = config
+            .legend_margin
+            .unwrap_or(((20.0 * scale) as u32).max(5));
+        let leg_area = config
+            .legend_area_size
+            .unwrap_or(((50.0 * scale) as u32).max(20));
 
-        root.present()
+        chart
+            .configure_series_labels()
+            .background_style(&WHITE.mix(leg_bg_opacity))
+            .border_style(BLACK.stroke_width(leg_border))
+            .label_font((font_legend, font_size_label))
+            .position(pos)
+            .margin(leg_margin)
+            .legend_area_size(leg_area)
+            .draw()
             .map_err(|e| GraphError::Drawing(e.to_string()))?;
     }
 
+    root.present()
+        .map_err(|e| GraphError::Drawing(e.to_string()))?;
+
+    Ok(())
+}
+
+/// ラスタ画像（生RGBバッファ）の生成
+pub fn generate_graph_image(
+    width: u32,
+    height: u32,
+    config: &GraphConfig,
+    series_list: &[SeriesData],
+) -> Result<Vec<u8>, GraphError> {
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "画像の幅および高さは1px以上を指定してください".to_string(),
+        ));
+    }
+
+    ensure_font_registered()?;
+
+    let mut buf = vec![0u8; (width * height * 3) as usize];
+    {
+        let root = BitMapBackend::with_buffer(&mut buf, (width, height)).into_drawing_area();
+        render_chart_to_area(&root, width, height, config, series_list)?;
+    }
+
     Ok(buf)
+}
+
+/// ベクター画像（SVG 文字列）の生成
+pub fn generate_graph_svg(
+    width: u32,
+    height: u32,
+    config: &GraphConfig,
+    series_list: &[SeriesData],
+) -> Result<String, GraphError> {
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "画像の幅および高さは1px以上を指定してください".to_string(),
+        ));
+    }
+
+    ensure_font_registered()?;
+
+    let mut svg_buffer = String::new();
+    {
+        let root = SVGBackend::with_string(&mut svg_buffer, (width, height)).into_drawing_area();
+        render_chart_to_area(&root, width, height, config, series_list)?;
+    }
+
+    Ok(svg_buffer)
 }
 
 macro_rules! define_draw_series_fn {
