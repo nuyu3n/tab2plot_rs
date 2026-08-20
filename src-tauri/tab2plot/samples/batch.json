@@ -13,8 +13,8 @@
   },
   "tasks": [
     {
-      "input": "samples/wave.tsv",
-      "output": "dist/wave_output.png",
+      "input": "wave.tsv",
+      "output": "../dist/wave_output.png",
       "config": {
         "x_desc": "時間 [s]",
         "y_desc": "電圧 [V]",
@@ -40,8 +40,8 @@
       }
     },
     {
-      "input": "samples/bode.tsv",
-      "output": "dist/bode_output.png",
+      "input": "bode.tsv",
+      "output": "../dist/bode_output.png",
       "config": {
         "x_desc": "周波数 [Hz]",
         "y_desc": "利得 [dB]",

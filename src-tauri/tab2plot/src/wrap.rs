@@ -10,7 +10,30 @@ pub fn default_config() -> GraphConfig {
     GraphConfig::default()
 }
 
+/// 区切り文字の自動判定ヘルパー（TSV, CSV, 空白区切り対応）
+pub fn detect_delimiter(table_text: &str) -> u8 {
+    let first_line = table_text
+        .lines()
+        .find(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .unwrap_or("");
+    if first_line.contains('\t') {
+        b'\t'
+    } else if first_line.contains(',') {
+        b','
+    } else if first_line.contains(' ') {
+        b' '
+    } else {
+        b'\t'
+    }
+}
+
 pub fn encode_rgb_to_png(width: u32, height: u32, rgb_data: &[u8]) -> Result<Vec<u8>, GraphError> {
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "画像の幅および高さは1px以上を指定してください".to_string(),
+        ));
+    }
+
     let mut png_buf = Vec::new();
     {
         let mut encoder = png::Encoder::new(Cursor::new(&mut png_buf), width, height);
@@ -35,20 +58,46 @@ pub fn parse_table_str(
     let mut rdr = csv::ReaderBuilder::new()
         .delimiter(delimiter)
         .comment(Some(b'#'))
+        .has_headers(false)
+        .flexible(true)
         .from_reader(data_str.as_bytes());
 
-    let headers = rdr
-        .headers()
-        .map_err(|e| GraphError::InvalidData(format!("ヘッダー取得失敗: {}", e)))?
-        .clone();
+    let mut records_iter = rdr.records();
+    let first_record = match records_iter.next() {
+        Some(res) => res.map_err(|e| GraphError::InvalidData(format!("データ読込失敗: {}", e)))?,
+        None => return Err(GraphError::InvalidData("データが空です".to_string())),
+    };
 
-    let num_series = headers.len().saturating_sub(1);
-    if num_series == 0 {
+    let num_cols = first_record.len();
+    if num_cols < 2 {
         return Err(GraphError::InvalidData(
             "データ列が不足しています（最低2列必要です）".to_string(),
         ));
     }
 
+    // 1行目の全列が数値変換可能かチェック（ヘッダー有無の自動判定）
+    let is_headerless = first_record
+        .iter()
+        .all(|field| field.trim().parse::<f64>().is_ok());
+
+    let (headers, first_data_row) = if is_headerless {
+        let generated_headers: Vec<String> = (0..num_cols)
+            .map(|i| {
+                if i == 0 {
+                    "X".to_string()
+                } else {
+                    format!("Series {}", i)
+                }
+            })
+            .collect();
+        (generated_headers, Some(first_record))
+    } else {
+        let extracted_headers: Vec<String> =
+            first_record.iter().map(|s| s.trim().to_string()).collect();
+        (extracted_headers, None)
+    };
+
+    let num_series = num_cols.saturating_sub(1);
     let default_colors = [
         RGBColor(0, 102, 204),
         RGBColor(204, 51, 0),
@@ -62,8 +111,8 @@ pub fn parse_table_str(
             let custom_style = config.series_styles.get(i);
             let header_label = headers
                 .get(i + 1)
-                .unwrap_or(&format!("Series {}", i + 1))
-                .to_string();
+                .cloned()
+                .unwrap_or_else(|| format!("Series {}", i + 1));
 
             let label = custom_style
                 .and_then(|s| s.label.clone())
@@ -98,20 +147,55 @@ pub fn parse_table_str(
         })
         .collect();
 
-    for (row_idx, result) in rdr.records().enumerate() {
-        let record = result.map_err(|e| {
-            GraphError::InvalidData(format!("{}行目の読込失敗: {}", row_idx + 1, e))
-        })?;
+    let process_record = |record: &csv::StringRecord,
+                          row_idx: usize,
+                          series_list: &mut [SeriesData]|
+     -> Result<(), GraphError> {
+        let x_str = record.get(0).unwrap_or("").trim();
+        let x = match x_str.parse::<f64>() {
+            Ok(val) => val,
+            Err(_) => {
+                eprintln!(
+                    "[Warn] {}行目: X軸数値のパースに失敗したためスキップしました: '{}'",
+                    row_idx, x_str
+                );
+                return Ok(());
+            }
+        };
 
-        if let Ok(x) = record.get(0).unwrap_or("").trim().parse::<f64>() {
-            for i in 0..num_series {
-                if let Some(val_str) = record.get(i + 1) {
-                    if let Ok(y) = val_str.trim().parse::<f64>() {
-                        series_list[i].points.push((x, y));
+        for i in 0..num_series {
+            if let Some(val_str) = record.get(i + 1) {
+                let trimmed = val_str.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match trimmed.parse::<f64>() {
+                    Ok(y) => series_list[i].points.push((x, y)),
+                    Err(_) => {
+                        eprintln!(
+                            "[Warn] {}行目 列{}: Y数値のパースに失敗しました: '{}'",
+                            row_idx,
+                            i + 2,
+                            trimmed
+                        );
                     }
                 }
             }
         }
+        Ok(())
+    };
+
+    let mut current_row = 1;
+    if let Some(record) = first_data_row {
+        process_record(&record, current_row, &mut series_list)?;
+    }
+
+    for result in records_iter {
+        current_row += 1;
+        let record = result.map_err(|e| {
+            GraphError::InvalidData(format!("{}行目の読込失敗: {}", current_row, e))
+        })?;
+        process_record(&record, current_row, &mut series_list)?;
     }
 
     Ok(series_list)
@@ -124,37 +208,69 @@ pub fn render_to_png_bytes(
     height: u32,
     delimiter: Option<u8>,
 ) -> Result<Vec<u8>, GraphError> {
-    let mut config: GraphConfig = match config_json {
-        Some(json) => serde_json::from_str(json)
-            .map_err(|e| GraphError::InvalidData(format!("設定JSONのパース失敗: {}", e)))?,
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "幅および高さは1px以上である必要があります".to_string(),
+        ));
+    }
+
+    let parsed_json_val: Option<Value> = match config_json {
+        Some(json) => Some(
+            serde_json::from_str(json)
+                .map_err(|e| GraphError::InvalidData(format!("設定JSONパース失敗: {}", e)))?,
+        ),
+        None => None,
+    };
+
+    let mut config: GraphConfig = match &parsed_json_val {
+        Some(val) => serde_json::from_value(val.clone())
+            .map_err(|e| GraphError::InvalidData(format!("設定構造体マッピング失敗: {}", e)))?,
         None => default_config(),
     };
 
-    let delim = delimiter.unwrap_or_else(|| {
-        if table_text.contains('\t') {
-            b'\t'
-        } else {
-            b','
-        }
-    });
-
+    let delim = delimiter.unwrap_or_else(|| detect_delimiter(table_text));
     let series_list = parse_table_str(table_text, delim, &config)?;
 
-    // JSON未指定、または範囲未設定時の Auto Range 算出
-    if config_json.is_none() || (config.x_range.start == 0.0 && config.x_range.end == 1.0) {
+    let has_explicit_x_range = parsed_json_val
+        .as_ref()
+        .map_or(false, |v| v.get("x_range").is_some());
+    let has_explicit_y_range = parsed_json_val
+        .as_ref()
+        .map_or(false, |v| v.get("y_range").is_some());
+    let has_explicit_y2_range = parsed_json_val
+        .as_ref()
+        .map_or(false, |v| v.get("y2_range").is_some());
+
+    // X軸 Auto Range
+    if !has_explicit_x_range {
         let mut x_min = f64::INFINITY;
         let mut x_max = f64::NEG_INFINITY;
-        let mut y_min = f64::INFINITY;
-        let mut y_max = f64::NEG_INFINITY;
-
         for s in &series_list {
-            for &(x, y) in &s.points {
+            for &(x, _) in &s.points {
                 if x < x_min {
                     x_min = x;
                 }
                 if x > x_max {
                     x_max = x;
                 }
+            }
+        }
+        if x_min.is_finite() && x_max.is_finite() {
+            let margin = if (x_max - x_min).abs() < 1e-6 {
+                1.0
+            } else {
+                (x_max - x_min) * 0.05
+            };
+            config.x_range = (x_min - margin)..(x_max + margin);
+        }
+    }
+
+    // 第1Y軸 Auto Range (use_secondary == false)
+    if !has_explicit_y_range {
+        let mut y_min = f64::INFINITY;
+        let mut y_max = f64::NEG_INFINITY;
+        for s in series_list.iter().filter(|s| !s.use_secondary) {
+            for &(_, y) in &s.points {
                 if y < y_min {
                     y_min = y;
                 }
@@ -163,17 +279,37 @@ pub fn render_to_png_bytes(
                 }
             }
         }
-
-        if x_min.is_finite() && x_max.is_finite() {
-            config.x_range = x_min..x_max;
-        }
         if y_min.is_finite() && y_max.is_finite() {
-            let y_margin = if (y_max - y_min).abs() < 1e-6 {
+            let margin = if (y_max - y_min).abs() < 1e-6 {
                 1.0
             } else {
                 (y_max - y_min) * 0.1
             };
-            config.y_range = (y_min - y_margin)..(y_max + y_margin);
+            config.y_range = (y_min - margin)..(y_max + margin);
+        }
+    }
+
+    // 第2Y軸 Auto Range (use_secondary == true)
+    if !has_explicit_y2_range {
+        let mut y2_min = f64::INFINITY;
+        let mut y2_max = f64::NEG_INFINITY;
+        for s in series_list.iter().filter(|s| s.use_secondary) {
+            for &(_, y) in &s.points {
+                if y < y2_min {
+                    y2_min = y;
+                }
+                if y > y2_max {
+                    y2_max = y;
+                }
+            }
+        }
+        if y2_min.is_finite() && y2_max.is_finite() {
+            let margin = if (y2_max - y2_min).abs() < 1e-6 {
+                1.0
+            } else {
+                (y2_max - y2_min) * 0.1
+            };
+            config.y2_range = (y2_min - margin)..(y2_max + margin);
         }
     }
 
@@ -191,13 +327,21 @@ pub fn render_from_files(
     let mut data_str = String::new();
     File::open(&data_path)
         .and_then(|mut f| f.read_to_string(&mut data_str))
-        .map_err(|e| GraphError::InvalidData(format!("データファイル読込エラー: {}", e)))?;
+        .map_err(|e| {
+            GraphError::InvalidData(format!(
+                "データファイル読込エラー ({:?}): {}",
+                data_path.as_ref(),
+                e
+            ))
+        })?;
 
     let config_json = if let Some(p) = config_path {
         let mut json = String::new();
-        File::open(p)
+        File::open(&p)
             .and_then(|mut f| f.read_to_string(&mut json))
-            .map_err(|e| GraphError::InvalidData(format!("設定ファイル読込エラー: {}", e)))?;
+            .map_err(|e| {
+                GraphError::InvalidData(format!("設定ファイル読込エラー ({:?}): {}", p.as_ref(), e))
+            })?;
         Some(json)
     } else {
         None
@@ -212,8 +356,13 @@ pub fn render_from_files(
         }
     }
 
-    std::fs::write(output_png_path, png_bytes)
-        .map_err(|e| GraphError::Drawing(format!("画像保存エラー: {}", e)))?;
+    std::fs::write(&output_png_path, png_bytes).map_err(|e| {
+        GraphError::Drawing(format!(
+            "画像保存エラー ({:?}): {}",
+            output_png_path.as_ref(),
+            e
+        ))
+    })?;
 
     Ok(())
 }
@@ -241,54 +390,86 @@ pub struct BatchConfig {
     pub tasks: Vec<BatchTask>,
 }
 
-fn merge_json(target: &mut Value, source: &Value) {
+pub fn merge_json(target: &mut Value, source: &Value) {
     match (target, source) {
         (Value::Object(t), Value::Object(s)) => {
             for (k, v) in s {
                 merge_json(t.entry(k.clone()).or_insert(Value::Null), v);
             }
         }
+        (Value::Array(t), Value::Array(s)) => {
+            for (i, val) in s.iter().enumerate() {
+                if i < t.len() {
+                    merge_json(&mut t[i], val);
+                } else {
+                    t.push(val.clone());
+                }
+            }
+        }
         (t, s) => *t = s.clone(),
     }
 }
 
-pub fn execute_batch(batch_config_path: impl AsRef<Path>) -> Result<(), GraphError> {
-    let mut file_str = String::new();
-    File::open(&batch_config_path)
-        .and_then(|mut f| f.read_to_string(&mut file_str))
-        .map_err(|e| GraphError::InvalidData(format!("バッチ設定ファイル読込失敗: {}", e)))?;
-
-    let batch: BatchConfig = serde_json::from_str(&file_str)
-        .map_err(|e| GraphError::InvalidData(format!("バッチ設定JSONパース失敗: {}", e)))?;
+/// 解析済み BatchConfig 構造体からのバッチ実行
+pub fn execute_batch_config(
+    batch: &BatchConfig,
+    base_dir: Option<&Path>,
+    cli_width_override: Option<u32>,
+    cli_height_override: Option<u32>,
+) -> Result<(), GraphError> {
+    let resolve_path = |p: &str| -> PathBuf {
+        let path = PathBuf::from(p);
+        if path.is_absolute() || path.exists() {
+            return path;
+        }
+        if let Some(base) = base_dir {
+            let from_base = base.join(&path);
+            if from_base.exists() || !base.as_os_str().is_empty() {
+                return from_base;
+            }
+        }
+        path
+    };
 
     for (idx, task) in batch.tasks.iter().enumerate() {
-        let input_path = PathBuf::from(&task.input);
+        let input_path = resolve_path(&task.input);
         let output_path = match &task.output {
-            Some(out) => PathBuf::from(out),
+            Some(out) => resolve_path(out),
             None => input_path.with_extension("png"),
         };
 
-        let width = task.width.or(batch.default_width).unwrap_or(1920);
-        let height = task.height.or(batch.default_height).unwrap_or(1440);
+        let width = task
+            .width
+            .or(batch.default_width)
+            .or(cli_width_override)
+            .unwrap_or(1920);
+        let height = task
+            .height
+            .or(batch.default_height)
+            .or(cli_height_override)
+            .unwrap_or(1440);
 
-        // 共通設定をベースに構築
         let mut final_config_val = batch
             .common
             .clone()
             .unwrap_or(Value::Object(Default::default()));
 
-        // 外部JSON設定ファイルが指定されていればマージ
         if let Some(ref cfg_file) = task.config_path {
+            let resolved_cfg = resolve_path(cfg_file);
             let mut ext_str = String::new();
-            File::open(cfg_file)
+            File::open(&resolved_cfg)
                 .and_then(|mut f| f.read_to_string(&mut ext_str))
-                .map_err(|e| GraphError::InvalidData(format!("個別設定ファイル読込失敗: {}", e)))?;
+                .map_err(|e| {
+                    GraphError::InvalidData(format!(
+                        "個別設定ファイル読込失敗 ({:?}): {}",
+                        resolved_cfg, e
+                    ))
+                })?;
             let ext_val: Value = serde_json::from_str(&ext_str)
                 .map_err(|e| GraphError::InvalidData(format!("個別設定JSONパース失敗: {}", e)))?;
             merge_json(&mut final_config_val, &ext_val);
         }
 
-        // タスク内のインライン設定があればマージ
         if let Some(ref inline_cfg) = task.config {
             merge_json(&mut final_config_val, inline_cfg);
         }
@@ -303,7 +484,7 @@ pub fn execute_batch(batch_config_path: impl AsRef<Path>) -> Result<(), GraphErr
         File::open(&input_path)
             .and_then(|mut f| f.read_to_string(&mut data_str))
             .map_err(|e| {
-                GraphError::InvalidData(format!("入力ファイル読込失敗 ({}): {}", task.input, e))
+                GraphError::InvalidData(format!("入力ファイル読込失敗 ({:?}): {}", input_path, e))
             })?;
 
         let png_bytes =
@@ -328,4 +509,33 @@ pub fn execute_batch(batch_config_path: impl AsRef<Path>) -> Result<(), GraphErr
     }
 
     Ok(())
+}
+
+/// JSON文字列からのバッチ実行（Tauri向け）
+pub fn execute_batch_from_str(
+    batch_json_str: &str,
+    base_dir: Option<&Path>,
+    cli_width_override: Option<u32>,
+    cli_height_override: Option<u32>,
+) -> Result<(), GraphError> {
+    let batch: BatchConfig = serde_json::from_str(batch_json_str)
+        .map_err(|e| GraphError::InvalidData(format!("バッチ設定JSONパース失敗: {}", e)))?;
+    execute_batch_config(&batch, base_dir, cli_width_override, cli_height_override)
+}
+
+/// ファイルパスからのバッチ実行（CLI向け）
+pub fn execute_batch(
+    batch_config_path: impl AsRef<Path>,
+    cli_width_override: Option<u32>,
+    cli_height_override: Option<u32>,
+) -> Result<(), GraphError> {
+    let batch_path = batch_config_path.as_ref();
+    let base_dir = batch_path.parent();
+
+    let mut file_str = String::new();
+    File::open(batch_path)
+        .and_then(|mut f| f.read_to_string(&mut file_str))
+        .map_err(|e| GraphError::InvalidData(format!("バッチ設定ファイル読込失敗: {}", e)))?;
+
+    execute_batch_from_str(&file_str, base_dir, cli_width_override, cli_height_override)
 }

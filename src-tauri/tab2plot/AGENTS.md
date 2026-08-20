@@ -2,7 +2,7 @@
 
 ## 1. プロジェクト概要
 
-`tab2plot` は、CSV/TSV形式の表データとJSON設定ファイルを入力とし、学術論文・実験レポート水準の高品位なグラフ（PNG画像）を高速に自動生成するRust製グラフ描画エンジン・CLIツールです。
+`tab2plot` は、CSV/TSV/スペース区切り形式の表データとJSON設定ファイルを入力とし、学術論文・実験レポート水準の高品位なグラフ（PNG画像）を高速に自動生成するRust製グラフ描画エンジン・CLIツールです。
 単一ファイルのプロットはもちろん、1つのバッチ設定JSONから複数グラフ（波形、周波数特性、IVカーブ等）を一括生成するバッチ処理機能、デスクトップアプリ（Tauri）やWebバックエンド向けのライブラリAPI（`wrap.rs`）を提供します。
 
 ---
@@ -10,16 +10,15 @@
 ## 2. ファイル構成と役割
 
 ```
-
 tab2plot/
 ├── assets/
-│ ├── NotoSansJP-Regular.ttf # 目盛り数値用 Sans-Serif フォント
-│ └── NotoSerifJP-Regular.ttf # 軸タイトル・凡例用 Serif フォント
+│   ├── NotoSansJP-Regular.ttf   # 目盛り数値用 Sans-Serif フォント
+│   └── NotoSerifJP-Regular.ttf  # 軸タイトル・凡例用 Serif フォント
 ├── src/
-│ ├── lib.rs # コア描画エンジン・座標変換・レイアウト・描画マクロ
-│ ├── wrap.rs # CSV/TSVパース・JSON設定マージ・バッチ実行・PNGエンコーダ
-│ └── main.rs # CLIエントリーポイント (clap)
-├── samples/ # テストデータ・設定サンプル
+│   ├── lib.rs                   # コア描画エンジン・座標変換・レイアウト・描画マクロ
+│   ├── wrap.rs                  # CSV/TSVパース・JSON設定マージ・バッチ実行・PNGエンコーダ
+│   └── main.rs                  # CLIエントリーポイント (clap)
+├── samples/                     # テストデータ・設定サンプル
 └── Cargo.toml
 
 ```
@@ -30,15 +29,16 @@ tab2plot/
 
 ### 3.1 データ入力と系列解析
 
-- **CSV / TSV 自動判別**: タブ文字の有無から区切り文字を自動判定（明示指定も可能）。
+- **区切り文字の自動判別**: タブ文字（TSV）、カンマ（CSV）、空白文字（スペース区切り）を先頭行から自動判定（明示指定も可能）。
+- **ヘッダー有無の自動判定**: 1行目がすべて数値に変換可能であればヘッダーなしデータとして1行目から描画し、文字列が含まれていればヘッダー行（系列名）として取得。
 - **複数系列の一括読み込み**: 1列目をX軸、2列目以降を各系列のY軸データとして解釈。
-- **ヘッダー & コメント対応**: 1行目を系列名として取得、`#` から始まる行をコメントとしてスキップ。
-- **Auto Range（自動範囲算出）**: 範囲未指定時は、データの最小値・最大値および10%のマージンから描画範囲を自動計算。
+- **コメント行スキップ**: `#` から始まる行をコメントとして自動除外。
+- **3軸個別の Auto Range（自動範囲算出）**: 設定JSONで範囲が未指定の場合、X軸・第1Y軸・第2Y軸（右軸）それぞれのデータ最小値・最大値から安全なマージンを付与して個別自動算出。
 
 ### 3.2 軸・スケール変換 (`AxisTransform`)
 
 - **`Linear`**: 通常の等間隔線形スケール。
-- **`Log10`**: 周波数特性・ボード線図などに適した常用対数スケール。
+- **`Log10`**: 周波数特性・ボード線図などに適した常用対数スケール（正の値のみ写像）。
 - **`BiLinear { pos_int, neg_int }`**: 原点 $(0, 0)$ を境に正負で拡大率を変える特殊スケール（半導体IVカーブ等）。
 
 ### 3.3 2つのレイアウト形式
@@ -52,36 +52,38 @@ tab2plot/
 
 ### 3.5 タイポグラフィとフォント使い分け
 
-- **Serif (`Noto Serif JP`)**: 軸タイトル (`x_desc`, `y_desc`, `y2_desc`)、凡例ラベル。
+- **Serif (`Noto Serif JP`)**: 軸タイトル (`x_desc`, `y_desc`, `y2_desc`)、凡例ラベルに適用。
 - **Sans-serif (`Noto Sans JP`)**: 目盛り数値（Tick Labels）に適用し、縮小表示時の視認性を確保。
 - バイナリ内蔵フォントのため、実行環境のOSフォント依存なし。
 
 ### 3.6 線種・マーカー・色指定
 
-- **線種 (`LineStyleType`)**: `Solid`（実線）、`Dashed`（破線）、`Dotted`（点線）、`DashDot`（一点鎖線）、`None`（線なし）。
-  - 画面比率に応じた正規化座標系によるダッシュ生成を実装。
+- **線種 (`LineStyleType`)**: `Solid`（実線）、`Dashed`（破線）、`Dotted`（点線）、`DashDot`（一点鎖線）、`None`（線なし）。描画アスペクト比を考慮した正規化ダッシュ生成を実装。
 - **マーカー (`MarkerType`)**: `CircleFilled`（塗り円）、`CircleEmpty`（白抜き円）、`Cross`（十字）、`None`。
 - **色**: RGB配列 `[R, G, B]` (0〜255) で系列ごとに自由指定。
 
 ### 3.7 目盛り & 補助線制御
 
 - **目盛り指定 (`TickMode`)**:
-  - `Interval { base, offset }`: 固定ステップ（例: 0.5刻み）。
-  - `Explicit([v1, v2, ...])`: 明示的な数値列挙（対数軸の $10^n$ 指定等）。
-  - `Auto(n)`: 目安本数に基づく自動配置。
-- **補助グリッド**: `x_minor_grid_interval`, `y_minor_grid_interval`, `y2_minor_grid_interval` で任意の細かさの薄い格子線を描画。
+- `Interval { base, offset }`: 固定ステップ（例: 0.5刻み）。
+- `Explicit([v1, v2, ...])`: 明示的な数値列挙（対数軸の $10^n$ 指定等）。範囲外の除外と自動ソートに対応。
+- `Auto(n)`: 目安本数に基づく自動配置。
 
-### 3.8 余白・間隔の微調整
+- **目盛り線カスタマイズ**: `x_tick_length`, `y_tick_length`（長さ）、`tick_width`（太さ）。
+- **補助グリッド**: `x_minor_grid_interval`, `y_minor_grid_interval`, `y2_minor_grid_interval` で任意の細かさの格子線を描画。`minor_grid_width`（太さ）や `grid_opacity`（不透明度）も調整可能。
+
+### 3.8 余白・間隔・凡例の微調整
 
 - `margin`: 外周余白 (px)。
 - `x_label_area`: 下部（X軸目盛り〜タイトル）エリア幅 (px)。
 - `y_label_area`: 左部（Y軸目盛り〜タイトル）エリア幅 (px)。
 - `right_margin`: 右側余白 / 第2Y軸エリア幅 (px)。
+- **凡例スタイル**: `legend_position`, `legend_border_width`, `legend_background_opacity`, `legend_margin`, `legend_area_size` により位置や余白を完全制御。
 
 ### 3.9 バッチ生成 & 設定マージ
 
-- 単一の `batch.json` から全タスク共通設定 (`common`) と個別設定 (`tasks`) を合成（ディープマージ）して複数グラフを一括出力。
-- すべての設定項目にデフォルト値が定義されているため、変更したい項目だけの部分指定（差分指定）が可能。
+- **ディレクトリ基準の相対パス解決**: `batch.json` 内に記載された `input`, `output`, `config_path` の相対パスは、コマンド実行場所ではなく **`batch.json` が配置されているディレクトリ** を基準に自動解決。
+- **3階層ディープマージ**: 全タスク共通設定 (`common`)、外部設定ファイル (`config_path`)、個別インライン設定 (`config`) を合成。`series_styles` などの配列要素もインデックス単位で安全にディープマージ。
 
 ---
 
@@ -112,21 +114,27 @@ tab2plot/
   "y2_ticks_mode": { "Auto": 5 },
   "x_tick_length": 8,
   "y_tick_length": 8,
+  "tick_width": 3.0,
   "font_name": "",
   "x_format_fixed": 1,
   "y_format_fixed": 2,
   "y2_format_fixed": 0,
   "show_legend": true,
   "legend_position": "UpperRight",
+  "legend_border_width": 3.0,
+  "legend_background_opacity": 0.8,
+  "legend_margin": 20,
+  "legend_area_size": 50,
   "x_transform": "Linear",
   "y_transform": "Linear",
   "y2_transform": "Linear",
   "x_minor_grid_interval": 0.5,
   "y_minor_grid_interval": 0.25,
   "y2_minor_grid_interval": 30.0,
-  "use_cross_axes": false,
   "axis_width": 3.0,
   "minor_grid_width": 1.0,
+  "grid_opacity": 0.3,
+  "use_cross_axes": false,
   "series_styles": [
     {
       "label": "測定値",
@@ -152,8 +160,6 @@ tab2plot/
 
 ### 4.2 バッチ一括設定 (`BatchConfig`)
 
-共通設定 (`common`) をベースにしつつ、各タスク内で差分設定をインライン上書き、または外部JSONファイル (`config_path`) をマージして実行します。
-
 ```json
 {
   "default_width": 1600,
@@ -162,6 +168,7 @@ tab2plot/
     "base_font_size": 36,
     "axis_width": 3.0,
     "minor_grid_width": 1.0,
+    "grid_opacity": 0.3,
     "show_legend": true,
     "legend_position": "UpperRight"
   },
@@ -216,12 +223,12 @@ cargo run -- -i samples/data1.tsv samples/data2.tsv -o dist/ -c samples/common.j
 
 ### オプション一覧
 
-- `-b, --batch <PATH>`: バッチ設定JSONファイルパス（指定時はバッチモードで実行）
-- `-i, --input <PATH...>`: 入力データファイルパス（複数指定可能）
-- `-o, --output <PATH>`: 出力先パス（単一処理時はファイルパス、複数処理時は出力ディレクトリ）
-- `-c, --config <PATH>`: グラフ設定JSONファイルパス（差分指定・省略可）
-- `--width <UINT>`: 出力画像幅（デフォルト: `1920`）
-- `--height <UINT>`: 出力画像高さ（デフォルト: `1440`）
+- `-b, --batch <PATH>`: バッチ設定JSONファイルパス（指定時はバッチモードで実行。`-i`, `-c` とは排他）。
+- `-i, --input <PATH...>`: 入力データファイルパス（複数指定可能。`-b` とは排他）。
+- `-o, --output <PATH>`: 出力先パス（単一処理時はファイルパスまたはディレクトリ、複数処理時は出力ディレクトリを指定）。
+- `-c, --config <PATH>`: グラフ設定JSONファイルパス（差分指定・省略可。`-b` とは排他）。
+- `--width <UINT>`: 出力画像幅（デフォルト: `1920`。`-b` 実行時はタスク/バッチ未指定時のフォールバックとして機能）。
+- `--height <UINT>`: 出力画像高さ（デフォルト: `1440`。`-b` 実行時はタスク/バッチ未指定時のフォールバックとして機能）。
 
 ---
 
@@ -232,7 +239,7 @@ use tab2plot::wrap::{render_to_png_bytes, render_from_files, execute_batch};
 
 // 1. 文字列データとJSONからメモリ上にPNGバイト列を直接生成
 let png_bytes: Vec<u8> = render_to_png_bytes(
-    table_text,           // &str (CSV/TSV)
+    table_text,           // &str (CSV/TSV/スペース区切り)
     Some(config_json),    // Option<&str> (NoneでAuto Range・デフォルト設定)
     1920,                 // width
     1440,                 // height
@@ -242,7 +249,7 @@ let png_bytes: Vec<u8> = render_to_png_bytes(
 // 2. ファイルパスベースの単一生成
 render_from_files("input.tsv", "output.png", Some("config.json"), 1920, 1440)?;
 
-// 3. バッチ設定ファイルの一括実行
-execute_batch("samples/batch.json")?;
+// 3. バッチ設定ファイルの一括実行（CLI引数オーバーライド対応）
+execute_batch("samples/batch.json", Some(1920), Some(1440))?;
 
 ```

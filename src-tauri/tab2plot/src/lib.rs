@@ -116,7 +116,7 @@ impl From<LegendPosition> for SeriesLabelPosition {
 }
 
 /// 軸の変換方式
-#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, PartialEq)]
 pub enum AxisTransform {
     Linear,
     Log10,
@@ -130,7 +130,7 @@ impl Default for AxisTransform {
 }
 
 impl AxisTransform {
-    fn forward(&self, v: f64) -> f64 {
+    pub fn forward(&self, v: f64) -> f64 {
         match self {
             AxisTransform::Linear => v,
             AxisTransform::Log10 => {
@@ -148,7 +148,7 @@ impl AxisTransform {
         }
     }
 
-    fn inverse(&self, v: f64) -> f64 {
+    pub fn inverse(&self, v: f64) -> f64 {
         match self {
             AxisTransform::Linear => v,
             AxisTransform::Log10 => 10f64.powf(v),
@@ -162,7 +162,7 @@ impl AxisTransform {
         }
     }
 
-    fn is_bilinear(&self) -> bool {
+    pub fn is_bilinear(&self) -> bool {
         matches!(self, AxisTransform::BiLinear { .. })
     }
 }
@@ -182,9 +182,18 @@ impl Default for TickMode {
 }
 
 impl TickMode {
-    fn resolve(&self, min: f64, max: f64) -> Option<Vec<f64>> {
+    pub fn resolve(&self, min: f64, max: f64) -> Option<Vec<f64>> {
         match self {
-            TickMode::Explicit(v) => Some(v.clone()),
+            TickMode::Explicit(v) => {
+                let mut ticks: Vec<f64> = v
+                    .iter()
+                    .copied()
+                    .filter(|&x| x.is_finite() && x >= min - 1e-9 && x <= max + 1e-9)
+                    .collect();
+                ticks.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                ticks.dedup();
+                Some(ticks)
+            }
             TickMode::Interval { base, offset } => {
                 if *base <= 0.0 || !base.is_finite() || !min.is_finite() || !max.is_finite() {
                     return None;
@@ -277,6 +286,8 @@ pub struct GraphConfig {
 
     pub x_tick_length: u32,
     pub y_tick_length: u32,
+    #[serde(default)]
+    pub tick_width: Option<f32>,
 
     pub font_name: String,
     pub x_format_fixed: usize,
@@ -287,6 +298,14 @@ pub struct GraphConfig {
     pub show_legend: bool,
     #[serde(default)]
     pub legend_position: LegendPosition,
+    #[serde(default)]
+    pub legend_border_width: Option<f32>,
+    #[serde(default)]
+    pub legend_background_opacity: Option<f64>,
+    #[serde(default)]
+    pub legend_margin: Option<u32>,
+    #[serde(default)]
+    pub legend_area_size: Option<u32>,
 
     #[serde(default)]
     pub x_transform: AxisTransform,
@@ -301,15 +320,16 @@ pub struct GraphConfig {
     pub y_minor_grid_interval: Option<f64>,
     #[serde(default)]
     pub y2_minor_grid_interval: Option<f64>,
+    #[serde(default)]
+    pub minor_grid_width: Option<f32>,
+    #[serde(default)]
+    pub grid_opacity: Option<f64>,
 
     #[serde(default)]
     pub use_cross_axes: bool,
 
     #[serde(default)]
     pub axis_width: Option<f32>,
-
-    #[serde(default)]
-    pub minor_grid_width: Option<f32>,
 
     #[serde(default)]
     pub series_styles: Vec<SeriesStyleConfig>,
@@ -337,21 +357,27 @@ impl Default for GraphConfig {
             y2_ticks_mode: TickMode::Auto(8),
             x_tick_length: 10,
             y_tick_length: 10,
+            tick_width: Some(3.0),
             font_name: String::new(),
             x_format_fixed: 2,
             y_format_fixed: 2,
             y2_format_fixed: 2,
             show_legend: true,
             legend_position: LegendPosition::UpperRight,
+            legend_border_width: Some(3.0),
+            legend_background_opacity: Some(0.8),
+            legend_margin: None,
+            legend_area_size: None,
             x_transform: AxisTransform::Linear,
             y_transform: AxisTransform::Linear,
             y2_transform: AxisTransform::Linear,
             x_minor_grid_interval: None,
             y_minor_grid_interval: None,
             y2_minor_grid_interval: None,
+            minor_grid_width: Some(1.0),
+            grid_opacity: Some(0.3),
             use_cross_axes: false,
             axis_width: Some(3.0),
-            minor_grid_width: Some(1.0),
             series_styles: Vec::new(),
         }
     }
@@ -363,12 +389,13 @@ fn default_range() -> Range<f64> {
 
 mod rgb_serde {
     use plotters::prelude::RGBColor;
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer, Serializer};
 
     pub fn serialize<S>(color: &RGBColor, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
+        use serde::Serialize;
         [color.0, color.1, color.2].serialize(serializer)
     }
 
@@ -386,21 +413,13 @@ struct PlotSeries<'a> {
     pts: Vec<(f64, f64)>,
 }
 
-fn centered_range(vmin: f64, vmax: f64) -> Range<f64> {
-    if !vmin.is_finite() || !vmax.is_finite() {
-        return -1.0..1.0;
-    }
-    let mut limit = vmin.abs().max(vmax.abs());
-    if limit == 0.0 {
-        limit = 1.0;
-    }
-    limit *= 1.1;
-    -limit..limit
-}
-
 fn fix_range(r: Range<f64>) -> Range<f64> {
-    if !r.start.is_finite() || !r.end.is_finite() || r.start >= r.end {
+    if !r.start.is_finite() || !r.end.is_finite() {
         0.0..1.0
+    } else if (r.end - r.start).abs() < 1e-9 {
+        (r.start - 1.0)..(r.end + 1.0)
+    } else if r.start > r.end {
+        r.end..r.start
     } else {
         r
     }
@@ -430,6 +449,7 @@ fn generate_dashed_segments(
     pattern: &[f64],
     x_span: f64,
     y_span: f64,
+    aspect_ratio: f64,
 ) -> Vec<Vec<(f64, f64)>> {
     if pts.len() < 2 || pattern.is_empty() {
         return vec![pts.to_vec()];
@@ -445,7 +465,7 @@ fn generate_dashed_segments(
         let (x0, y0) = pts[i];
         let (x1, y1) = pts[i + 1];
         let dx_norm = (x1 - x0) / x_span;
-        let dy_norm = (y1 - y0) / y_span;
+        let dy_norm = ((y1 - y0) / y_span) * aspect_ratio;
         let seg_len_norm = (dx_norm * dx_norm + dy_norm * dy_norm).sqrt();
 
         if seg_len_norm <= 1e-9 {
@@ -505,17 +525,17 @@ pub fn generate_graph_image(
     config: &GraphConfig,
     series_list: &[SeriesData],
 ) -> Result<Vec<u8>, GraphError> {
+    if width == 0 || height == 0 {
+        return Err(GraphError::InvalidData(
+            "画像の幅および高さは1px以上を指定してください".to_string(),
+        ));
+    }
+
     ensure_font_registered()?;
 
     let scale_x = width as f64 / 1920.0;
     let scale_y = height as f64 / 1440.0;
     let scale = scale_x.min(scale_y);
-
-    // 不要。
-    // let base_margin = (80.0 * scale) as u32;
-    // let x_label_area = (130.0 * scale) as u32;
-    // let y_label_area = (170.0 * scale) as u32;
-    // let right_margin = (140.0 * scale) as u32;
 
     let (font_size_label, font_size_desc) = match config.base_font_size {
         Some(base_size) => {
@@ -529,7 +549,6 @@ pub fn generate_graph_image(
         }
     };
 
-    // フォントサイズに応じた安全な必要エリア幅を算出
     let font_factor = font_size_desc as f64 + font_size_label as f64;
     let auto_x_area = ((110.0 * scale).max(font_factor * 1.6)) as u32;
     let auto_y_area = ((140.0 * scale).max(font_factor * 2.0)) as u32;
@@ -541,8 +560,6 @@ pub fn generate_graph_image(
         .right_margin
         .unwrap_or(((140.0 * scale) as u32).max(60));
 
-    // フォントの使い分け解決
-    // 軸タイトル/凡例 = Serif, 目盛り数値 = Sans
     let (font_desc, font_ticks, font_legend) = if config.font_name.is_empty() {
         (FONT_SERIF, FONT_SANS, FONT_SERIF)
     } else {
@@ -622,27 +639,17 @@ pub fn generate_graph_image(
         ));
     }
 
-    let x_plot_range = fix_range(if config.x_transform.is_bilinear() {
-        centered_range(x_min, x_max)
-    } else {
+    let x_plot_range = fix_range(
         config.x_transform.forward(config.x_range.start)
-            ..config.x_transform.forward(config.x_range.end)
-    });
-
-    let y_plot_range = fix_range(if config.y_transform.is_bilinear() {
-        centered_range(y_min, y_max)
-    } else {
+            ..config.x_transform.forward(config.x_range.end),
+    );
+    let y_plot_range = fix_range(
         config.y_transform.forward(config.y_range.start)
-            ..config.y_transform.forward(config.y_range.end)
-    });
-
+            ..config.y_transform.forward(config.y_range.end),
+    );
     let y2_plot_range = fix_range(if has_secondary {
-        if config.y2_transform.is_bilinear() {
-            centered_range(y2_min, y2_max)
-        } else {
-            config.y2_transform.forward(config.y2_range.start)
-                ..config.y2_transform.forward(config.y2_range.end)
-        }
+        config.y2_transform.forward(config.y2_range.start)
+            ..config.y2_transform.forward(config.y2_range.end)
     } else {
         0.0..1.0
     });
@@ -650,6 +657,20 @@ pub fn generate_graph_image(
     let x_span = (x_plot_range.end - x_plot_range.start).abs().max(1e-6);
     let y_span = (y_plot_range.end - y_plot_range.start).abs().max(1e-6);
     let y2_span = (y2_plot_range.end - y2_plot_range.start).abs().max(1e-6);
+
+    let plot_w = (width as f64
+        - (base_margin + y_label_area) as f64
+        - (if has_secondary {
+            y_label_area
+        } else if config.show_legend {
+            right_margin
+        } else {
+            base_margin
+        }) as f64)
+        .max(10.0);
+    let plot_h =
+        (height as f64 - (base_margin + x_label_area) as f64 - base_margin as f64).max(10.0);
+    let aspect_ratio = plot_h / plot_w;
 
     let mut buf = vec![0u8; (width * height * 3) as usize];
 
@@ -664,11 +685,10 @@ pub fn generate_graph_image(
             .x_label_area_size(x_label_area)
             .y_label_area_size(y_label_area);
 
-        if config.show_legend || has_secondary {
-            chart_builder.margin_right(right_margin);
-        }
         if has_secondary {
             chart_builder.right_y_label_area_size(y_label_area);
+        } else if config.show_legend {
+            chart_builder.margin_right(right_margin);
         }
 
         let mut chart = chart_builder
@@ -694,6 +714,11 @@ pub fn generate_graph_image(
         let (y_real_lo, y_real_hi) = (y_real_min.min(y_real_max), y_real_min.max(y_real_max));
         let y_ticks_resolved = config.y_ticks_mode.resolve(y_real_lo, y_real_hi);
 
+        let border_width = (config.axis_width.unwrap_or(6.0) as f64 * scale).max(1.0) as u32;
+        let tick_width = (config.tick_width.unwrap_or(3.0) as f64 * scale).max(1.0) as u32;
+        let x_tick_len = (config.x_tick_length as f64 * scale).max(2.0) as i32;
+        let y_tick_len = (config.y_tick_length as f64 * scale).max(2.0) as i32;
+
         if config.use_cross_axes {
             chart
                 .configure_mesh()
@@ -703,8 +728,6 @@ pub fn generate_graph_image(
                 .disable_y_axis()
                 .draw()
                 .map_err(|e| GraphError::Drawing(e.to_string()))?;
-
-            let border_width = (config.axis_width.unwrap_or(6.0) as f64 * scale).max(1.0) as u32;
 
             let center_y = if y_plot_range.contains(&0.0) {
                 0.0
@@ -758,13 +781,25 @@ pub fn generate_graph_image(
                     .map_err(|e| GraphError::Drawing(e.to_string()))?;
             }
 
-            // X軸目盛りラベル (Sans)
+            // X軸目盛り線 & ラベル (Sans)
             if let Some(ticks) = &x_ticks_resolved {
                 for &tv in ticks {
                     let tx = x_transform.forward(tv);
                     if tx < x_plot_range.start || tx > x_plot_range.end {
                         continue;
                     }
+                    if y_plot_range.contains(&0.0) {
+                        chart
+                            .draw_series(std::iter::once(
+                                EmptyElement::at((tx, center_y))
+                                    + PathElement::new(
+                                        vec![(0, -x_tick_len / 2), (0, x_tick_len / 2)],
+                                        BLACK.stroke_width(tick_width),
+                                    ),
+                            ))
+                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                    }
+
                     let label = format!("{:.precision$}", tv, precision = x_digits);
                     let (pos, offset) = if tv.abs() < 1e-9 {
                         (Pos::new(HPos::Right, VPos::Top), (-6, 6))
@@ -781,13 +816,25 @@ pub fn generate_graph_image(
                 }
             }
 
-            // Y軸目盛りラベル (Sans)
+            // Y軸目盛り線 & ラベル (Sans)
             if let Some(ticks) = &y_ticks_resolved {
                 for &tv in ticks {
                     let ty = y_transform.forward(tv);
                     if ty < y_plot_range.start || ty > y_plot_range.end {
                         continue;
                     }
+                    if x_plot_range.contains(&0.0) {
+                        chart
+                            .draw_series(std::iter::once(
+                                EmptyElement::at((center_x, ty))
+                                    + PathElement::new(
+                                        vec![(-y_tick_len / 2, 0), (y_tick_len / 2, 0)],
+                                        BLACK.stroke_width(tick_width),
+                                    ),
+                            ))
+                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                    }
+
                     if tv.abs() < 1e-9 {
                         continue;
                     }
@@ -814,8 +861,8 @@ pub fn generate_graph_image(
             let mut mesh = chart.configure_mesh();
             mesh.x_desc(&config.x_desc)
                 .y_desc(&config.y_desc)
-                .axis_desc_style((font_desc, font_size_desc)) // 軸タイトルは Serif
-                .label_style((font_ticks, font_size_label)) // 目盛り数字は Sans
+                .axis_desc_style((font_desc, font_size_desc))
+                .label_style((font_ticks, font_size_label))
                 .axis_style(TRANSPARENT)
                 .disable_x_mesh()
                 .disable_y_mesh()
@@ -844,66 +891,66 @@ pub fn generate_graph_image(
 
             mesh.draw()
                 .map_err(|e| GraphError::Drawing(e.to_string()))?;
-        }
 
-        // 外枠
-        let border_width = (config.axis_width.unwrap_or(6.0) as f64 * scale).max(1.0) as u32;
-        chart
-            .draw_series(std::iter::once(Rectangle::new(
-                [
-                    (x_plot_range.start, y_plot_range.start),
-                    (x_plot_range.end, y_plot_range.end),
-                ],
-                BLACK.stroke_width(border_width),
-            )))
-            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+            // 標準外枠モードの外枠
+            chart
+                .draw_series(std::iter::once(Rectangle::new(
+                    [
+                        (x_plot_range.start, y_plot_range.start),
+                        (x_plot_range.end, y_plot_range.end),
+                    ],
+                    BLACK.stroke_width(border_width),
+                )))
+                .map_err(|e| GraphError::Drawing(e.to_string()))?;
 
-        let tick_width = (3.0 * scale).max(1.0) as u32;
-
-        if let Some(ticks) = &x_ticks_resolved {
-            for &tv in ticks {
-                let tx = x_transform.forward(tv);
-                if tx < x_plot_range.start || tx > x_plot_range.end {
-                    continue;
+            // 内向き目盛り線
+            if let Some(ticks) = &x_ticks_resolved {
+                for &tv in ticks {
+                    let tx = x_transform.forward(tv);
+                    if tx < x_plot_range.start || tx > x_plot_range.end {
+                        continue;
+                    }
+                    chart
+                        .draw_series(std::iter::once(
+                            EmptyElement::at((tx, y_plot_range.start))
+                                + PathElement::new(
+                                    vec![(0, 0), (0, -x_tick_len)],
+                                    BLACK.stroke_width(tick_width),
+                                ),
+                        ))
+                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
                 }
-                chart
-                    .draw_series(std::iter::once(
-                        EmptyElement::at((tx, y_plot_range.start))
-                            + PathElement::new(
-                                vec![(0, 0), (0, -(config.x_tick_length as i32))],
-                                BLACK.stroke_width(tick_width),
-                            ),
-                    ))
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
+            }
+
+            if let Some(ticks) = &y_ticks_resolved {
+                for &tv in ticks {
+                    let ty = y_transform.forward(tv);
+                    if ty < y_plot_range.start || ty > y_plot_range.end {
+                        continue;
+                    }
+                    chart
+                        .draw_series(std::iter::once(
+                            EmptyElement::at((x_plot_range.start, ty))
+                                + PathElement::new(
+                                    vec![(0, 0), (y_tick_len, 0)],
+                                    BLACK.stroke_width(tick_width),
+                                ),
+                        ))
+                        .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                }
             }
         }
 
-        if let Some(ticks) = &y_ticks_resolved {
-            for &tv in ticks {
-                let ty = y_transform.forward(tv);
-                if ty < y_plot_range.start || ty > y_plot_range.end {
-                    continue;
-                }
-                chart
-                    .draw_series(std::iter::once(
-                        EmptyElement::at((x_plot_range.start, ty))
-                            + PathElement::new(
-                                vec![(0, 0), (config.y_tick_length as i32, 0)],
-                                BLACK.stroke_width(tick_width),
-                            ),
-                    ))
-                    .map_err(|e| GraphError::Drawing(e.to_string()))?;
-            }
-        }
-
+        // 補助グリッド
         let grid_width = (config.minor_grid_width.unwrap_or(1.0) as f64 * scale).max(1.0) as u32;
+        let grid_opacity = config.grid_opacity.unwrap_or(0.3).clamp(0.0, 1.0);
 
         if let Some(interval) = config.x_minor_grid_interval {
             for tx in minor_grid_lines(&x_plot_range, interval) {
                 chart
                     .draw_series(std::iter::once(PathElement::new(
                         vec![(tx, y_plot_range.start), (tx, y_plot_range.end)],
-                        BLACK.mix(0.3).stroke_width(grid_width),
+                        BLACK.mix(grid_opacity).stroke_width(grid_width),
                     )))
                     .map_err(|e| GraphError::Drawing(e.to_string()))?;
             }
@@ -913,7 +960,7 @@ pub fn generate_graph_image(
                 chart
                     .draw_series(std::iter::once(PathElement::new(
                         vec![(x_plot_range.start, ty), (x_plot_range.end, ty)],
-                        BLACK.mix(0.3).stroke_width(grid_width),
+                        BLACK.mix(grid_opacity).stroke_width(grid_width),
                     )))
                     .map_err(|e| GraphError::Drawing(e.to_string()))?;
             }
@@ -935,8 +982,8 @@ pub fn generate_graph_image(
                 let mut mesh2 = chart.configure_secondary_axes();
                 mesh2
                     .y_desc(&config.y2_desc)
-                    .axis_desc_style((font_desc, font_size_desc)) // 軸タイトルは Serif
-                    .label_style((font_ticks, font_size_label)) // 目盛り数字は Sans
+                    .axis_desc_style((font_desc, font_size_desc))
+                    .label_style((font_ticks, font_size_label))
                     .y_label_formatter(&y2_fmt);
                 match &y2_ticks_resolved {
                     Some(ticks) => {
@@ -956,32 +1003,59 @@ pub fn generate_graph_image(
                     chart
                         .draw_secondary_series(std::iter::once(PathElement::new(
                             vec![(x_plot_range.start, ty), (x_plot_range.end, ty)],
-                            BLACK.mix(0.3).stroke_width(grid_width),
+                            BLACK.mix(grid_opacity).stroke_width(grid_width),
                         )))
                         .map_err(|e| GraphError::Drawing(e.to_string()))?;
                 }
             }
 
             for series in &secondary_series {
-                draw_one_series_secondary(&mut chart, series, config.show_legend, x_span, y2_span)?;
+                draw_one_series_secondary(
+                    &mut chart,
+                    series,
+                    config.show_legend,
+                    x_span,
+                    y2_span,
+                    aspect_ratio,
+                )?;
             }
         }
 
         for series in &primary_series {
-            draw_one_series_primary(&mut chart, series, config.show_legend, x_span, y_span)?;
+            draw_one_series_primary(
+                &mut chart,
+                series,
+                config.show_legend,
+                x_span,
+                y_span,
+                aspect_ratio,
+            )?;
         }
 
         // 凡例 (Serif)
         if config.show_legend {
             let pos: SeriesLabelPosition = config.legend_position.into();
+            let leg_border =
+                (config.legend_border_width.unwrap_or(3.0) as f64 * scale).max(1.0) as u32;
+            let leg_bg_opacity = config
+                .legend_background_opacity
+                .unwrap_or(0.8)
+                .clamp(0.0, 1.0);
+            let leg_margin = config
+                .legend_margin
+                .unwrap_or(((20.0 * scale) as u32).max(5));
+            let leg_area = config
+                .legend_area_size
+                .unwrap_or(((50.0 * scale) as u32).max(20));
+
             chart
                 .configure_series_labels()
-                .background_style(&WHITE.mix(0.8))
-                .border_style(BLACK.stroke_width(3))
+                .background_style(&WHITE.mix(leg_bg_opacity))
+                .border_style(BLACK.stroke_width(leg_border))
                 .label_font((font_legend, font_size_label))
                 .position(pos)
-                .margin((20.0 * scale) as u32)
-                .legend_area_size((50.0 * scale) as u32)
+                .margin(leg_margin)
+                .legend_area_size(leg_area)
                 .draw()
                 .map_err(|e| GraphError::Drawing(e.to_string()))?;
         }
@@ -1001,6 +1075,7 @@ macro_rules! define_draw_series_fn {
             show_legend: bool,
             x_span: f64,
             y_span: f64,
+            aspect_ratio: f64,
         ) -> Result<(), GraphError>
         where
             DB: DrawingBackend + 'a,
@@ -1013,11 +1088,122 @@ macro_rules! define_draw_series_fn {
             let color = s.color;
             let size = s.marker_size;
             let l_width = s.line_width;
+            let l_style = s.line_style;
+            let m_type = s.marker_type;
+
+            let has_line = l_style != LineStyleType::None && series.pts.len() >= 2;
+            let has_marker = m_type != MarkerType::None && !series.pts.is_empty();
+            let should_register_legend =
+                show_legend && !s.label.is_empty() && (has_line || has_marker);
             let mut legend_registered = false;
 
-            // --- 線の描画（実線・破線・点線対応） ---
-            if s.line_style != LineStyleType::None && series.pts.len() >= 2 {
-                let pattern: Option<&[f64]> = match s.line_style {
+            let make_legend_icon = move |(x, y): (i32, i32)| {
+                let dummy_path = vec![(0, 0), (0, 0)];
+                let line_stroke = color.stroke_width(l_width);
+                let no_stroke = TRANSPARENT.stroke_width(0);
+
+                let (p1, s1, p2, s2, p3, s3, p4, s4) = match l_style {
+                    LineStyleType::Solid => (
+                        vec![(0, 0), (30, 0)],
+                        line_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                    ),
+                    LineStyleType::Dashed => (
+                        vec![(0, 0), (12, 0)],
+                        line_stroke,
+                        vec![(18, 0), (30, 0)],
+                        line_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                    ),
+                    LineStyleType::Dotted => (
+                        vec![(0, 0), (4, 0)],
+                        line_stroke,
+                        vec![(9, 0), (13, 0)],
+                        line_stroke,
+                        vec![(18, 0), (22, 0)],
+                        line_stroke,
+                        vec![(26, 0), (30, 0)],
+                        line_stroke,
+                    ),
+                    LineStyleType::DashDot => (
+                        vec![(0, 0), (14, 0)],
+                        line_stroke,
+                        vec![(20, 0), (22, 0)],
+                        line_stroke,
+                        vec![(27, 0), (30, 0)],
+                        line_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                    ),
+                    LineStyleType::None => (
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                    ),
+                };
+
+                let cross_sz = size as i32;
+                let (c1, cs1, c2, cs2, circ_r, circ_style) = match m_type {
+                    MarkerType::CircleFilled => (
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        size,
+                        color.filled(),
+                    ),
+                    MarkerType::CircleEmpty => (
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        size,
+                        color.stroke_width(2),
+                    ),
+                    MarkerType::Cross => (
+                        vec![(15 - cross_sz, 0), (15 + cross_sz, 0)],
+                        color.stroke_width(2),
+                        vec![(15, -cross_sz), (15, cross_sz)],
+                        color.stroke_width(2),
+                        0,
+                        no_stroke,
+                    ),
+                    MarkerType::None => (
+                        dummy_path.clone(),
+                        no_stroke,
+                        dummy_path.clone(),
+                        no_stroke,
+                        0,
+                        no_stroke,
+                    ),
+                };
+
+                EmptyElement::at((x, y))
+                    + PathElement::new(p1, s1)
+                    + PathElement::new(p2, s2)
+                    + PathElement::new(p3, s3)
+                    + PathElement::new(p4, s4)
+                    + PathElement::new(c1, cs1)
+                    + PathElement::new(c2, cs2)
+                    + Circle::new((15, 0), circ_r, circ_style)
+            };
+
+            // 1. 線の描画
+            if has_line {
+                let pattern: Option<&[f64]> = match l_style {
                     LineStyleType::Solid => None,
                     LineStyleType::Dashed => Some(&[0.025, 0.015]),
                     LineStyleType::Dotted => Some(&[0.005, 0.010]),
@@ -1026,7 +1212,7 @@ macro_rules! define_draw_series_fn {
                 };
 
                 let segments: Vec<Vec<(f64, f64)>> = if let Some(pat) = pattern {
-                    generate_dashed_segments(&series.pts, pat, x_span, y_span)
+                    generate_dashed_segments(&series.pts, pat, x_span, y_span, aspect_ratio)
                 } else {
                     vec![series.pts.clone()]
                 };
@@ -1036,52 +1222,12 @@ macro_rules! define_draw_series_fn {
                         continue;
                     }
                     let line = LineSeries::new(seg.into_iter(), color.stroke_width(l_width));
-                    if show_legend && !s.label.is_empty() && !legend_registered {
-                        let l_style = s.line_style;
-                        let (p1, p2, p3, p4) = match l_style {
-                            LineStyleType::Solid => (
-                                vec![(0, 0), (30, 0)],
-                                vec![(0, 0), (0, 0)],
-                                vec![(0, 0), (0, 0)],
-                                vec![(0, 0), (0, 0)],
-                            ),
-                            LineStyleType::Dashed => (
-                                vec![(0, 0), (12, 0)],
-                                vec![(18, 0), (30, 0)],
-                                vec![(0, 0), (0, 0)],
-                                vec![(0, 0), (0, 0)],
-                            ),
-                            LineStyleType::Dotted => (
-                                vec![(0, 0), (4, 0)],
-                                vec![(9, 0), (13, 0)],
-                                vec![(18, 0), (22, 0)],
-                                vec![(26, 0), (30, 0)],
-                            ),
-                            LineStyleType::DashDot => (
-                                vec![(0, 0), (14, 0)],
-                                vec![(20, 0), (22, 0)],
-                                vec![(27, 0), (30, 0)],
-                                vec![(0, 0), (0, 0)],
-                            ),
-                            LineStyleType::None => (
-                                vec![(0, 0), (0, 0)],
-                                vec![(0, 0), (0, 0)],
-                                vec![(0, 0), (0, 0)],
-                                vec![(0, 0), (0, 0)],
-                            ),
-                        };
-
+                    if should_register_legend && !legend_registered {
                         chart
                             .$draw_method(line)
                             .map_err(|e| GraphError::Drawing(e.to_string()))?
-                            .label(s.label.clone())
-                            .legend(move |(x, y)| {
-                                EmptyElement::at((x, y))
-                                    + PathElement::new(p1.clone(), color.stroke_width(l_width))
-                                    + PathElement::new(p2.clone(), color.stroke_width(l_width))
-                                    + PathElement::new(p3.clone(), color.stroke_width(l_width))
-                                    + PathElement::new(p4.clone(), color.stroke_width(l_width))
-                            });
+                            .label(&s.label)
+                            .legend(make_legend_icon);
                         legend_registered = true;
                     } else {
                         chart
@@ -1091,64 +1237,57 @@ macro_rules! define_draw_series_fn {
                 }
             }
 
-            // --- マーカーの描画 ---
-            match s.marker_type {
-                MarkerType::CircleFilled => {
-                    let m_series = series
-                        .pts
-                        .iter()
-                        .map(|&(x, y)| Circle::new((x, y), size, color.filled()));
-                    if show_legend && !s.label.is_empty() && !legend_registered {
-                        chart
-                            .$draw_method(m_series)
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?
-                            .label(&s.label)
-                            .legend(move |(x, y)| Circle::new((x + 15, y), size, color.filled()));
-                    } else {
-                        chart
-                            .$draw_method(m_series)
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+            // 2. マーカーの描画
+            if has_marker {
+                let m_series_iter = series.pts.iter().cloned();
+                match m_type {
+                    MarkerType::CircleFilled => {
+                        let m_series =
+                            m_series_iter.map(|(x, y)| Circle::new((x, y), size, color.filled()));
+                        if should_register_legend && !legend_registered {
+                            chart
+                                .$draw_method(m_series)
+                                .map_err(|e| GraphError::Drawing(e.to_string()))?
+                                .label(&s.label)
+                                .legend(make_legend_icon);
+                        } else {
+                            chart
+                                .$draw_method(m_series)
+                                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                        }
                     }
-                }
-                MarkerType::CircleEmpty => {
-                    let m_series = series
-                        .pts
-                        .iter()
-                        .map(|&(x, y)| Circle::new((x, y), size, color.stroke_width(2)));
-                    if show_legend && !s.label.is_empty() && !legend_registered {
-                        chart
-                            .$draw_method(m_series)
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?
-                            .label(&s.label)
-                            .legend(move |(x, y)| {
-                                Circle::new((x + 15, y), size, color.stroke_width(2))
-                            });
-                    } else {
-                        chart
-                            .$draw_method(m_series)
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                    MarkerType::CircleEmpty => {
+                        let m_series = m_series_iter
+                            .map(|(x, y)| Circle::new((x, y), size, color.stroke_width(2)));
+                        if should_register_legend && !legend_registered {
+                            chart
+                                .$draw_method(m_series)
+                                .map_err(|e| GraphError::Drawing(e.to_string()))?
+                                .label(&s.label)
+                                .legend(make_legend_icon);
+                        } else {
+                            chart
+                                .$draw_method(m_series)
+                                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                        }
                     }
-                }
-                MarkerType::Cross => {
-                    let m_series = series
-                        .pts
-                        .iter()
-                        .map(|&(x, y)| Cross::new((x, y), size, color.stroke_width(2)));
-                    if show_legend && !s.label.is_empty() && !legend_registered {
-                        chart
-                            .$draw_method(m_series)
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?
-                            .label(&s.label)
-                            .legend(move |(x, y)| {
-                                Cross::new((x + 15, y), size, color.stroke_width(2))
-                            });
-                    } else {
-                        chart
-                            .$draw_method(m_series)
-                            .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                    MarkerType::Cross => {
+                        let m_series = m_series_iter
+                            .map(|(x, y)| Cross::new((x, y), size, color.stroke_width(2)));
+                        if should_register_legend && !legend_registered {
+                            chart
+                                .$draw_method(m_series)
+                                .map_err(|e| GraphError::Drawing(e.to_string()))?
+                                .label(&s.label)
+                                .legend(make_legend_icon);
+                        } else {
+                            chart
+                                .$draw_method(m_series)
+                                .map_err(|e| GraphError::Drawing(e.to_string()))?;
+                        }
                     }
+                    MarkerType::None => {}
                 }
-                MarkerType::None => {}
             }
 
             Ok(())
